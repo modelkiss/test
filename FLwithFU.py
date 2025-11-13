@@ -78,6 +78,63 @@ def filter_target_class(client_raw_indices, train_targets, target_class):
     return filtered_indices
 
 
+def resolve_base_dataset(subset):
+    """递归解析出Subset链条中的最底层dataset"""
+    base_dataset = subset
+    while isinstance(base_dataset, torch.utils.data.Subset):
+        base_dataset = base_dataset.dataset
+    return base_dataset
+
+
+def identify_forget_clients(client_raw_indices, train_targets, target_class):
+    forget_clients = []
+    for client_id, indices in enumerate(client_raw_indices):
+        if any(train_targets[idx] == target_class for idx in indices):
+            forget_clients.append(client_id)
+    return forget_clients
+
+
+def create_filtered_client_datasets(client_datasets, client_raw_indices, train_targets, target_class):
+    base_dataset = resolve_base_dataset(client_datasets[0])
+    filtered_datasets = []
+    filtered_sizes = {}
+
+    for client_id, original_dataset in enumerate(client_datasets):
+        filtered_indices = filter_target_class(client_raw_indices[client_id], train_targets, target_class)
+        if len(filtered_indices) == len(client_raw_indices[client_id]):
+            # 没有目标类数据，直接复用原始子集
+            filtered_datasets.append(original_dataset)
+        else:
+            filtered_subset = torch.utils.data.Subset(base_dataset, filtered_indices)
+            filtered_datasets.append(filtered_subset)
+            filtered_sizes[client_id] = len(filtered_indices)
+
+    return filtered_datasets, filtered_sizes
+
+
+def compute_client_data_sizes(client_raw_indices):
+    return [len(indices) for indices in client_raw_indices]
+
+
+def blend_model_parameters(original_params, updated_params, retain_weight, updated_weight):
+    """根据样本权重融合两个模型参数字典"""
+    if updated_weight == 0:
+        return copy.deepcopy(original_params)
+
+    total_weight = retain_weight + updated_weight
+    if total_weight == 0:
+        return copy.deepcopy(original_params)
+
+    blended_params = {}
+    for name in original_params.keys():
+        orig_param = original_params[name].to(dtype=torch.float32)
+        new_param = updated_params[name].to(dtype=torch.float32)
+        blended = (retain_weight * orig_param + updated_weight * new_param) / total_weight
+        blended_params[name] = blended.to(dtype=original_params[name].dtype)
+
+    return blended_params
+
+
 # --------------------------
 # 2. 模型定义
 # --------------------------
@@ -128,12 +185,25 @@ class CIFAR10CNN(nn.Module):
 # --------------------------
 # 3. 联邦学习核心函数
 # --------------------------
-def client_train(client_model, client_dataset, epochs=5, batch_size=64, lr=0.001):
+def client_train(client_model, client_dataset, epochs=5, batch_size=64, lr=0.001, trainable_param_names=None):
     client_model.train()
     client_model.to(device)
 
+    dataset_size = len(client_dataset)
+    if dataset_size == 0:
+        # 没有样本时直接返回原始参数，避免除零
+        return copy.deepcopy(client_model.state_dict()), 0
+
+    if trainable_param_names is not None:
+        trainable_param_names = set(trainable_param_names)
+        for name, param in client_model.named_parameters():
+            param.requires_grad = name in trainable_param_names
+    else:
+        for _, param in client_model.named_parameters():
+            param.requires_grad = True
+
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(client_model.parameters(), lr=lr)
+    optimizer = optim.Adam(filter(lambda p: p.requires_grad, client_model.parameters()), lr=lr)
 
     dataloader = torch.utils.data.DataLoader(
         client_dataset, batch_size=batch_size, shuffle=True, num_workers=2
@@ -152,7 +222,7 @@ def client_train(client_model, client_dataset, epochs=5, batch_size=64, lr=0.001
 
             running_loss += loss.item() * inputs.size(0)
 
-        epoch_loss = running_loss / len(dataloader.dataset)
+        epoch_loss = running_loss / max(1, len(dataloader.dataset))
 
     return client_model.state_dict(), len(client_dataset)
 
@@ -232,39 +302,28 @@ def evaluate_model(model, test_loader, return_class_acc=False):
 # 4. 联邦遗忘方法实现
 # --------------------------
 def retrain_unlearning(global_model, client_datasets, client_raw_indices, train_targets, test_loader,
-                       num_clients=10, client_epochs=5, batch_size=64, lr=0.001):
+                       num_clients=10, client_epochs=5, batch_size=64, lr=0.001, target_class=None):
     """重训练方式：过滤数据后重新训练所有客户端并聚合"""
     # 1. 随机选择目标遗忘类别
-    target_class = np.random.randint(0, 10)
+    if target_class is None:
+        target_class = np.random.randint(0, 10)
     target_class_name = CIFAR10_CLASSES[target_class]
     print(f"\n=== 重训练遗忘流程 ===")
     print(f"目标遗忘类别：{target_class} ({target_class_name})")
 
     # 2. 识别持有目标类数据的客户端（遗忘客户端）
-    forget_client_ids = []
-    for client_id in range(num_clients):
-        client_indices = client_raw_indices[client_id]
-        has_target_class = any(train_targets[idx] == target_class for idx in client_indices)
-        if has_target_class:
-            forget_client_ids.append(client_id)
+    forget_client_ids = identify_forget_clients(client_raw_indices, train_targets, target_class)
 
     print(f"持有目标类数据的客户端：{forget_client_ids} (共{len(forget_client_ids)}个)")
 
     # 3. 准备遗忘后的客户端数据集
-    new_client_datasets = []
-    for client_id in range(num_clients):
-        if client_id in forget_client_ids:
-            # 遗忘客户端：过滤目标类数据
-            filtered_indices = filter_target_class(
-                client_raw_indices[client_id], train_targets, target_class
-            )
-            print(f"客户端{client_id}：原始数据{len(client_raw_indices[client_id])}个 "
-                  f"→ 过滤后{len(filtered_indices)}个（移除目标类数据）")
-            new_subset = torch.utils.data.Subset(client_datasets[0].dataset, filtered_indices)
-            new_client_datasets.append(new_subset)
-        else:
-            # 非遗忘客户端：保留原始数据
-            new_client_datasets.append(client_datasets[client_id])
+    new_client_datasets, filtered_sizes = create_filtered_client_datasets(
+        client_datasets, client_raw_indices, train_targets, target_class
+    )
+    for client_id in forget_client_ids:
+        original_size = len(client_raw_indices[client_id])
+        filtered_size = filtered_sizes.get(client_id, original_size)
+        print(f"客户端{client_id}：原始数据{original_size}个 → 过滤后{filtered_size}个（移除目标类数据）")
 
     # 4. 所有客户端重新训练
     print("\n所有客户端重新训练（遗忘客户端已过滤目标类数据）...")
@@ -277,11 +336,15 @@ def retrain_unlearning(global_model, client_datasets, client_raw_indices, train_
             client_model, new_client_datasets[client_id],
             epochs=client_epochs, batch_size=batch_size, lr=lr
         )
-        client_params_list.append((client_params, client_size))
+        if client_size > 0:
+            client_params_list.append((client_params, client_size))
 
     # 5. 重新聚合得到遗忘后的全局模型
     print("\n重新聚合客户端模型参数...")
-    unlearned_global_params = fed_avg_aggregate(client_params_list)
+    if client_params_list:
+        unlearned_global_params = fed_avg_aggregate(client_params_list)
+    else:
+        unlearned_global_params = copy.deepcopy(global_model.state_dict())
     unlearned_global_model = CIFAR10CNN().to(device)
     unlearned_global_model.load_state_dict(unlearned_global_params)
 
@@ -290,54 +353,293 @@ def retrain_unlearning(global_model, client_datasets, client_raw_indices, train_
 
 
 def fru_unlearning(global_model, client_datasets, client_raw_indices, train_targets, test_loader,
-                   num_clients=10, client_epochs=5, batch_size=64, lr=0.001):
+                   num_clients=10, client_epochs=5, batch_size=64, lr=0.001, target_class=None):
     """FRU (Federated Retrieval Unlearning) 方法"""
     print("\n=== FRU遗忘流程 ===")
-    print("FRU: 通过检索相关参数进行选择性遗忘（待实现）")
-    # 这里添加FRU算法的具体实现逻辑
-    target_class = np.random.randint(0, 10)
-    # 临时返回原始模型作为占位
-    return copy.deepcopy(global_model), target_class, evaluate_performance(global_model, global_model, test_loader)
+    if target_class is None:
+        target_class = np.random.randint(0, 10)
+    print(f"目标遗忘类别：{target_class} ({CIFAR10_CLASSES[target_class]})")
+
+    forget_client_ids = identify_forget_clients(client_raw_indices, train_targets, target_class)
+    print(f"持有目标类数据的客户端：{forget_client_ids} (共{len(forget_client_ids)}个)")
+
+    if not forget_client_ids:
+        print("没有客户端持有目标类别数据，模型保持不变")
+        return copy.deepcopy(global_model), target_class, evaluate_performance(global_model, global_model, test_loader)
+
+    filtered_datasets, _ = create_filtered_client_datasets(
+        client_datasets, client_raw_indices, train_targets, target_class
+    )
+
+    client_original_sizes = compute_client_data_sizes(client_raw_indices)
+    total_samples = sum(client_original_sizes)
+    retained_weight = total_samples - sum(client_original_sizes[c] for c in forget_client_ids)
+
+    forget_params_list = []
+    updated_weight = 0
+    for client_id in forget_client_ids:
+        filtered_dataset = filtered_datasets[client_id]
+        filtered_size = len(filtered_dataset)
+        if filtered_size == 0:
+            print(f"客户端{client_id} 过滤后无样本，跳过训练")
+            continue
+
+        print(f"客户端{client_id}：过滤后样本数 {filtered_size}")
+        client_model = CIFAR10CNN().to(device)
+        client_model.load_state_dict(global_model.state_dict())
+        client_params, client_size = client_train(
+            client_model, filtered_dataset,
+            epochs=max(1, client_epochs // 2), batch_size=batch_size, lr=lr
+        )
+        if client_size > 0:
+            forget_params_list.append((client_params, client_size))
+            updated_weight += client_size
+
+    if not forget_params_list:
+        print("遗忘客户端在过滤后没有可用样本，模型保持原样")
+        return copy.deepcopy(global_model), target_class, evaluate_performance(global_model, global_model, test_loader)
+
+    forget_aggregated_params = fed_avg_aggregate(forget_params_list)
+    blended_params = blend_model_parameters(
+        global_model.state_dict(), forget_aggregated_params,
+        retain_weight=retained_weight, updated_weight=updated_weight
+    )
+
+    unlearned_model = CIFAR10CNN().to(device)
+    unlearned_model.load_state_dict(blended_params)
+
+    return unlearned_model, target_class, evaluate_performance(global_model, unlearned_model, test_loader)
 
 
 def fed_eraser_unlearning(global_model, client_datasets, client_raw_indices, train_targets, test_loader,
-                          num_clients=10, client_epochs=5, batch_size=64, lr=0.001):
+                          num_clients=10, client_epochs=5, batch_size=64, lr=0.001, target_class=None):
     """FedEraser 方法"""
     print("\n=== FedEraser遗忘流程 ===")
-    print("FedEraser: 通过参数擦除实现遗忘（待实现）")
-    # 这里添加FedEraser算法的具体实现逻辑
-    target_class = np.random.randint(0, 10)
-    return copy.deepcopy(global_model), target_class, evaluate_performance(global_model, global_model, test_loader)
+    if target_class is None:
+        target_class = np.random.randint(0, 10)
+    print(f"目标遗忘类别：{target_class} ({CIFAR10_CLASSES[target_class]})")
+
+    forget_client_ids = identify_forget_clients(client_raw_indices, train_targets, target_class)
+    print(f"移除贡献的客户端：{forget_client_ids} (共{len(forget_client_ids)}个)")
+
+    if len(forget_client_ids) == num_clients:
+        print("所有客户端均需遗忘，退化为重训练策略")
+        return retrain_unlearning(
+            global_model, client_datasets, client_raw_indices, train_targets, test_loader,
+            num_clients=num_clients, client_epochs=client_epochs, batch_size=batch_size, lr=lr,
+            target_class=target_class
+        )
+
+    retained_client_ids = [cid for cid in range(num_clients) if cid not in forget_client_ids]
+    client_params_list = []
+    for client_id in retained_client_ids:
+        dataset = client_datasets[client_id]
+        if len(dataset) == 0:
+            continue
+
+        client_model = CIFAR10CNN().to(device)
+        client_model.load_state_dict(global_model.state_dict())
+        client_params, client_size = client_train(
+            client_model, dataset,
+            epochs=client_epochs, batch_size=batch_size, lr=lr
+        )
+        if client_size > 0:
+            client_params_list.append((client_params, client_size))
+
+    if not client_params_list:
+        print("没有可用于恢复的客户端，模型保持原样")
+        return copy.deepcopy(global_model), target_class, evaluate_performance(global_model, global_model, test_loader)
+
+    new_params = fed_avg_aggregate(client_params_list)
+    unlearned_model = CIFAR10CNN().to(device)
+    unlearned_model.load_state_dict(new_params)
+
+    return unlearned_model, target_class, evaluate_performance(global_model, unlearned_model, test_loader)
 
 
 def fed_recovery_unlearning(global_model, client_datasets, client_raw_indices, train_targets, test_loader,
-                            num_clients=10, client_epochs=5, batch_size=64, lr=0.001):
+                            num_clients=10, client_epochs=5, batch_size=64, lr=0.001, target_class=None):
     """FedRecovery 方法"""
     print("\n=== FedRecovery遗忘流程 ===")
-    print("FedRecovery: 通过模型恢复实现遗忘（待实现）")
-    # 这里添加FedRecovery算法的具体实现逻辑
-    target_class = np.random.randint(0, 10)
-    return copy.deepcopy(global_model), target_class, evaluate_performance(global_model, global_model, test_loader)
+    if target_class is None:
+        target_class = np.random.randint(0, 10)
+    print(f"目标遗忘类别：{target_class} ({CIFAR10_CLASSES[target_class]})")
+
+    forget_client_ids = identify_forget_clients(client_raw_indices, train_targets, target_class)
+    print(f"需要恢复影响的客户端：{forget_client_ids} (共{len(forget_client_ids)}个)")
+
+    # 第一步：执行FedEraser逻辑，移除目标客户端的贡献
+    erased_model, _, _ = fed_eraser_unlearning(
+        global_model, client_datasets, client_raw_indices, train_targets, test_loader,
+        num_clients=num_clients, client_epochs=max(1, client_epochs // 2),
+        batch_size=batch_size, lr=lr, target_class=target_class
+    )
+
+    # 第二步：选择部分未受影响客户端进行恢复性训练
+    retained_client_ids = [cid for cid in range(num_clients) if cid not in forget_client_ids]
+    recovery_client_count = min(len(retained_client_ids), max(1, num_clients // 3))
+    recovery_clients = retained_client_ids[:recovery_client_count]
+    print(f"恢复阶段选取的客户端：{recovery_clients}")
+
+    recovery_params_list = []
+    for client_id in recovery_clients:
+        dataset = client_datasets[client_id]
+        if len(dataset) == 0:
+            continue
+
+        client_model = CIFAR10CNN().to(device)
+        client_model.load_state_dict(erased_model.state_dict())
+        client_params, client_size = client_train(
+            client_model, dataset,
+            epochs=max(1, client_epochs // 2), batch_size=batch_size, lr=lr
+        )
+        if client_size > 0:
+            recovery_params_list.append((client_params, client_size))
+
+    if recovery_params_list:
+        recovery_params = fed_avg_aggregate(recovery_params_list)
+        erased_model.load_state_dict(recovery_params)
+    else:
+        print("恢复阶段没有可用客户端，跳过额外聚合")
+
+    return erased_model, target_class, evaluate_performance(global_model, erased_model, test_loader)
 
 
 def sfu_unlearning(global_model, client_datasets, client_raw_indices, train_targets, test_loader,
-                   num_clients=10, client_epochs=5, batch_size=64, lr=0.001):
+                   num_clients=10, client_epochs=5, batch_size=64, lr=0.001, target_class=None):
     """SFU (Selective Federated Unlearning) 方法"""
     print("\n=== SFU遗忘流程 ===")
-    print("SFU: 选择性联邦遗忘（待实现）")
-    # 这里添加SFU算法的具体实现逻辑
-    target_class = np.random.randint(0, 10)
-    return copy.deepcopy(global_model), target_class, evaluate_performance(global_model, global_model, test_loader)
+    if target_class is None:
+        target_class = np.random.randint(0, 10)
+    print(f"目标遗忘类别：{target_class} ({CIFAR10_CLASSES[target_class]})")
+
+    forget_client_ids = identify_forget_clients(client_raw_indices, train_targets, target_class)
+    print(f"选择性微调的客户端：{forget_client_ids} (共{len(forget_client_ids)}个)")
+
+    if not forget_client_ids:
+        print("没有客户端需要遗忘，模型保持原样")
+        return copy.deepcopy(global_model), target_class, evaluate_performance(global_model, global_model, test_loader)
+
+    filtered_datasets, _ = create_filtered_client_datasets(
+        client_datasets, client_raw_indices, train_targets, target_class
+    )
+
+    trainable_names = [name for name, _ in CIFAR10CNN().named_parameters() if name.startswith('fc_layers')]
+
+    client_original_sizes = compute_client_data_sizes(client_raw_indices)
+    total_samples = sum(client_original_sizes)
+    retained_weight = total_samples - sum(client_original_sizes[c] for c in forget_client_ids)
+
+    updated_weight = 0
+    forget_params_list = []
+    for client_id in forget_client_ids:
+        dataset = filtered_datasets[client_id]
+        if len(dataset) == 0:
+            print(f"客户端{client_id} 过滤后无样本，跳过")
+            continue
+
+        client_model = CIFAR10CNN().to(device)
+        client_model.load_state_dict(global_model.state_dict())
+        params, size = client_train(
+            client_model, dataset,
+            epochs=max(1, client_epochs // 2), batch_size=batch_size, lr=lr,
+            trainable_param_names=trainable_names
+        )
+        if size > 0:
+            forget_params_list.append((params, size))
+            updated_weight += size
+
+    if not forget_params_list:
+        print("选择性训练未获得有效更新，模型保持原样")
+        return copy.deepcopy(global_model), target_class, evaluate_performance(global_model, global_model, test_loader)
+
+    aggregated_params = fed_avg_aggregate(forget_params_list)
+    blended_params = blend_model_parameters(
+        global_model.state_dict(), aggregated_params,
+        retain_weight=retained_weight, updated_weight=updated_weight
+    )
+
+    unlearned_model = CIFAR10CNN().to(device)
+    unlearned_model.load_state_dict(blended_params)
+
+    return unlearned_model, target_class, evaluate_performance(global_model, unlearned_model, test_loader)
 
 
 def fed_af_unlearning(global_model, client_datasets, client_raw_indices, train_targets, test_loader,
-                      num_clients=10, client_epochs=5, batch_size=64, lr=0.001):
+                      num_clients=10, client_epochs=5, batch_size=64, lr=0.001, target_class=None):
     """FedAF (Federated Amnesic Fine-tuning) 方法"""
     print("\n=== FedAF遗忘流程 ===")
-    print("FedAF: 联邦失忆微调（待实现）")
-    # 这里添加FedAF算法的具体实现逻辑
-    target_class = np.random.randint(0, 10)
-    return copy.deepcopy(global_model), target_class, evaluate_performance(global_model, global_model, test_loader)
+    if target_class is None:
+        target_class = np.random.randint(0, 10)
+    print(f"目标遗忘类别：{target_class} ({CIFAR10_CLASSES[target_class]})")
+
+    forget_client_ids = identify_forget_clients(client_raw_indices, train_targets, target_class)
+    print(f"进行失忆微调的客户端：{forget_client_ids} (共{len(forget_client_ids)}个)")
+
+    base_dataset = resolve_base_dataset(client_datasets[0])
+    forget_indices = [
+        idx
+        for client_id in forget_client_ids
+        for idx in client_raw_indices[client_id]
+        if train_targets[idx] == target_class
+    ]
+
+    if not forget_indices:
+        print("目标类别样本为空，模型保持原样")
+        return copy.deepcopy(global_model), target_class, evaluate_performance(global_model, global_model, test_loader)
+
+    forget_subset = torch.utils.data.Subset(base_dataset, forget_indices)
+    dataloader = torch.utils.data.DataLoader(
+        forget_subset, batch_size=batch_size, shuffle=True, num_workers=2
+    )
+
+    unlearned_model = CIFAR10CNN().to(device)
+    unlearned_model.load_state_dict(global_model.state_dict())
+    unlearned_model.train()
+    optimizer = optim.Adam(unlearned_model.parameters(), lr=lr)
+    epochs = max(1, client_epochs // 2)
+
+    print("对目标类别执行失忆微调，使其输出接近均匀分布...")
+    for epoch in range(epochs):
+        for inputs, _ in dataloader:
+            inputs = inputs.to(device)
+            outputs = unlearned_model(inputs)
+            log_probs = torch.log_softmax(outputs, dim=1)
+            target_dist = torch.full((inputs.size(0), 10), 1.0 / 10, device=device)
+            loss = torch.nn.functional.kl_div(log_probs, target_dist, reduction='batchmean')
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+    unlearned_model.eval()
+
+    # 使用一小部分未受影响客户端进行恢复性微调
+    retained_client_ids = [cid for cid in range(num_clients) if cid not in forget_client_ids]
+    support_client_count = min(len(retained_client_ids), max(1, num_clients // 4))
+    support_clients = retained_client_ids[:support_client_count]
+    print(f"支持性微调客户端：{support_clients}")
+
+    support_params_list = []
+    for client_id in support_clients:
+        dataset = client_datasets[client_id]
+        if len(dataset) == 0:
+            continue
+
+        client_model = CIFAR10CNN().to(device)
+        client_model.load_state_dict(unlearned_model.state_dict())
+        params, size = client_train(
+            client_model, dataset,
+            epochs=1, batch_size=batch_size, lr=lr
+        )
+        if size > 0:
+            support_params_list.append((params, size))
+
+    if support_params_list:
+        support_params = fed_avg_aggregate(support_params_list)
+        unlearned_model.load_state_dict(support_params)
+
+    return unlearned_model, target_class, evaluate_performance(global_model, unlearned_model, test_loader)
 
 
 def evaluate_performance(pre_model, post_model, test_loader):
