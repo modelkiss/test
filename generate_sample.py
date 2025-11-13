@@ -235,55 +235,77 @@ def predict_image(pre_model, post_model, image_tensor):
 
 
 def add_prediction_text(image, predictions):
-    """在图像右侧添加预测结果文本（修复中文显示，展示概率分布）"""
-    # 设置中文字体，解决中文显示为□的问题
+    """在图像右侧添加预测结果文本（修复中文显示，展示全部类别概率分布）"""
+    # 导入必要库
+    import io
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from PIL import Image
+    import torch
+
+    # 设置中文字体，解决中文显示问题
     plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
     plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
 
-    # 将PyTorch张量转换为PIL图像
+    # 将PyTorch张量转换为PIL图像（处理[-1,1]到[0,255]的转换）
     if isinstance(image, torch.Tensor):
-        image = image.permute(1, 2, 0).cpu().numpy()
-        image = (image * 255).astype(np.uint8)
+        image = image.permute(1, 2, 0).cpu().numpy()  # 转换通道顺序为(H,W,C)
+        image = (image + 1) / 2  # 从[-1,1]归一化到[0,1]
+        image = (image * 255).astype(np.uint8)  # 转换为[0,255]整数
         image = Image.fromarray(image)
 
-    # 创建一个新的图像，包含原图和文本区域（加宽文本区域以容纳更多信息）
-    new_width = image.width + 300  # 增加300像素作为文本区域
+    # 调整文本区域宽度以容纳全部10个类别（CIFAR10共10类）
+    text_area_width = 400  # 加宽文本区域，确保全部类别显示完整
+    new_width = image.width + text_area_width
     new_image = Image.new('RGB', (new_width, image.height), color='white')
     new_image.paste(image, (0, 0))
+
+    # 计算文本布局参数（适配全部10个类别的显示）
+    start_y = max(20, image.height * 0.05)  # 起始y坐标
+    line_spacing = max(18, image.height * 0.04)  # 增大行间距，避免10个类别重叠
+    font_size = min(8, int(image.height * 0.022))  # 微调字体大小，保证显示完整
 
     # 使用matplotlib添加文本
     plt.figure(figsize=(new_width / 100, image.height / 100), dpi=100)
     plt.imshow(new_image)
-    plt.axis('off')
+    plt.axis('off')  # 关闭坐标轴
 
-    # 添加文本（展示Top3概率的类别，避免信息过多）
-    text_y = 30
-    plt.text(image.width + 10, text_y, "遗忘前模型预测（Top3）:", fontsize=8)
+    # 获取全部类别的概率（CIFAR10共10类）
+    pre_probs = predictions['pre']['label']
+    post_probs = predictions['post']['label']
+    num_classes = len(pre_probs)  # 应为10
 
-    # 取概率最高的前3个类别
-    pre_top3 = np.argsort(predictions['pre']['all_probs'])[-3:][::-1]
-    for i, idx in enumerate(pre_top3):
-        plt.text(image.width + 20, text_y + 20 + i * 20,
-                 f"{CIFAR10_CLASSES[idx]}: {predictions['pre']['all_probs'][idx]:.4f}",
-                 fontsize=8)
+    # 添加遗忘前模型预测（全部类别）
+    plt.text(image.width + 10, start_y, "遗忘前模型预测（全部类别）:", fontsize=font_size, fontweight='bold')
+    for class_idx in range(num_classes):
+        # 按类别索引顺序展示，保持一致性
+        plt.text(
+            image.width + 20,
+            start_y + line_spacing * (class_idx + 1),  # 逐行显示
+            f"{CIFAR10_CLASSES[class_idx]}: {pre_probs[class_idx]:.4f}",
+            fontsize=font_size
+        )
 
-    # 遗忘后模型预测
-    text_y += 100  # 调整垂直位置
-    plt.text(image.width + 10, text_y, "遗忘后模型预测（Top3）:", fontsize=8)
-    post_top3 = np.argsort(predictions['post']['all_probs'])[-3:][::-1]
-    for i, idx in enumerate(post_top3):
-        plt.text(image.width + 20, text_y + 20 + i * 20,
-                 f"{CIFAR10_CLASSES[idx]}: {predictions['post']['all_probs'][idx]:.4f}",
-                 fontsize=8)
+    # 添加遗忘后模型预测（全部类别），与前部分保持适当距离
+    post_start_y = start_y + line_spacing * (num_classes + 2)  # 留出2行空白分隔
+    plt.text(image.width + 10, post_start_y, "遗忘后模型预测（全部类别）:", fontsize=font_size, fontweight='bold')
+    for class_idx in range(num_classes):
+        plt.text(
+            image.width + 20,
+            post_start_y + line_spacing * (class_idx + 1),
+            f"{CIFAR10_CLASSES[class_idx]}: {post_probs[class_idx]:.4f}",
+            fontsize=font_size
+        )
 
-    # 保存到缓冲区
+    # 保存到缓冲区并转换为PIL图像
     buf = io.BytesIO()
     plt.tight_layout(pad=0)
     plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0)
     buf.seek(0)
-
-    # 转换回PIL图像
     result_image = Image.open(buf)
+
+    # 关闭matplotlib图形，释放资源
+    plt.close()
 
     return result_image
 
