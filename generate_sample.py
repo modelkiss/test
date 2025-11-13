@@ -8,11 +8,39 @@ from torchvision.utils import save_image
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 from PIL import Image
 import io
 
 # 导入FLwithFU中的模型和数据处理函数
 from FLwithFU import CIFAR10CNN, CIFAR10_CLASSES
+
+
+def configure_font_for_display():
+    """配置可用的中文字体，避免matplotlib重复的缺失字体警告。"""
+    preferred_fonts = [
+        "SimHei",
+        "WenQuanYi Micro Hei",
+        "Heiti TC",
+        "Microsoft YaHei",
+        "PingFang SC",
+        "Noto Sans CJK SC",
+        "Source Han Sans SC",
+    ]
+
+    available_fonts = {f.name for f in font_manager.fontManager.ttflist}
+
+    for font_name in preferred_fonts:
+        if font_name in available_fonts:
+            plt.rcParams["font.family"] = font_name
+            plt.rcParams["font.sans-serif"] = [font_name]
+            break
+    else:
+        # 回退到matplotlib默认字体，至少可以避免告警信息
+        default_family = plt.rcParams.get("font.family", ["DejaVu Sans"])  # type: ignore[arg-type]
+        plt.rcParams["font.family"] = default_family
+
+    plt.rcParams["axes.unicode_minus"] = False
 
 # 设备配置
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -216,36 +244,46 @@ def predict_image(pre_model, post_model, image_tensor):
         pre_probs = F.softmax(pre_outputs, dim=1).squeeze().cpu().numpy()
         post_probs = F.softmax(post_outputs, dim=1).squeeze().cpu().numpy()
 
+        # 构造（类别, 概率）列表，排除概率为0的类别
+        def build_prob_list(prob_array):
+            prob_list = [
+                (CIFAR10_CLASSES[idx], float(prob))
+                for idx, prob in enumerate(prob_array)
+                if float(prob) > 0.0
+            ]
+            if not prob_list:
+                # 极端情况下若全部概率为0，回退到完整列表
+                prob_list = [
+                    (CIFAR10_CLASSES[idx], float(prob_array[idx]))
+                    for idx in range(len(prob_array))
+                ]
+            return prob_list
+
+        pre_prob_list = build_prob_list(pre_probs)
+        post_prob_list = build_prob_list(post_probs)
+
         # 获取最高置信度的类别和值
-        pre_max_idx = np.argmax(pre_probs)
-        post_max_idx = np.argmax(post_probs)
+        pre_max_idx = int(np.argmax(pre_probs))
+        post_max_idx = int(np.argmax(post_probs))
 
         return {
             'pre': {
-                'all_probs': pre_probs,  # 完整概率向量
+                'probabilities': pre_prob_list,
                 'top_class': CIFAR10_CLASSES[pre_max_idx],
-                'top_confidence': pre_probs[pre_max_idx]
+                'top_confidence': float(pre_probs[pre_max_idx])
             },
             'post': {
-                'all_probs': post_probs,  # 完整概率向量
+                'probabilities': post_prob_list,
                 'top_class': CIFAR10_CLASSES[post_max_idx],
-                'top_confidence': post_probs[post_max_idx]
+                'top_confidence': float(post_probs[post_max_idx])
             }
         }
 
 
 def add_prediction_text(image, predictions):
     """在图像右侧添加预测结果文本（修复中文显示，展示全部类别概率分布）"""
-    # 导入必要库
-    import io
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from PIL import Image
-    import torch
-
     # 设置中文字体，解决中文显示问题
-    plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
-    plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
+    configure_font_for_display()
 
     # 将PyTorch张量转换为PIL图像（处理[-1,1]到[0,255]的转换）
     if isinstance(image, torch.Tensor):
@@ -271,29 +309,28 @@ def add_prediction_text(image, predictions):
     plt.axis('off')  # 关闭坐标轴
 
     # 获取全部类别的概率（CIFAR10共10类）
-    pre_probs = predictions['pre']['all_probs']
-    post_probs = predictions['post']['all_probs']
-    num_classes = len(pre_probs)  # 应为10
+    pre_probs = predictions['pre']['probabilities']
+    post_probs = predictions['post']['probabilities']
+    num_classes = len(pre_probs)  # CIFAR10中应显示10个类别
 
     # 添加遗忘前模型预测（全部类别）
     plt.text(image.width + 10, start_y, "遗忘前模型预测（全部类别）:", fontsize=font_size, fontweight='bold')
-    for class_idx in range(num_classes):
-        # 按类别索引顺序展示，保持一致性
+    for class_idx, (class_name, prob) in enumerate(pre_probs):
         plt.text(
             image.width + 20,
             start_y + line_spacing * (class_idx + 1),  # 逐行显示
-            f"{CIFAR10_CLASSES[class_idx]}: {pre_probs[class_idx]:.4f}",
+            f"{class_name}: {prob:.4f}",
             fontsize=font_size
         )
 
     # 添加遗忘后模型预测（全部类别），与前部分保持适当距离
     post_start_y = start_y + line_spacing * (num_classes + 2)  # 留出2行空白分隔
     plt.text(image.width + 10, post_start_y, "遗忘后模型预测（全部类别）:", fontsize=font_size, fontweight='bold')
-    for class_idx in range(num_classes):
+    for class_idx, (class_name, prob) in enumerate(post_probs):
         plt.text(
             image.width + 20,
             post_start_y + line_spacing * (class_idx + 1),
-            f"{CIFAR10_CLASSES[class_idx]}: {post_probs[class_idx]:.4f}",
+            f"{class_name}: {prob:.4f}",
             fontsize=font_size
         )
 
