@@ -271,8 +271,8 @@ def add_prediction_text(image, predictions):
     plt.axis('off')  # 关闭坐标轴
 
     # 获取全部类别的概率（CIFAR10共10类）
-    pre_probs = predictions['pre']['label']
-    post_probs = predictions['post']['label']
+    pre_probs = predictions['pre']['all_probs']
+    post_probs = predictions['post']['all_probs']
     num_classes = len(pre_probs)  # 应为10
 
     # 添加遗忘前模型预测（全部类别）
