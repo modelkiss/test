@@ -16,8 +16,38 @@ import io
 from FLwithFU import CIFAR10CNN, CIFAR10_CLASSES
 
 
+try:
+    RESAMPLE_BICUBIC = Image.Resampling.BICUBIC  # Pillow >= 9.1.0
+except AttributeError:  # pragma: no cover - 兼容旧版本Pillow
+    RESAMPLE_BICUBIC = Image.BICUBIC
+
+
 def configure_font_for_display():
-    """配置可用的中文字体，避免matplotlib重复的缺失字体警告。"""
+    """配置可用的中文字体，避免matplotlib重复的缺失字体警告。
+
+    返回值:
+        str | None: 成功配置时返回字体名称，失败返回 ``None``。
+    """
+
+    # 允许通过环境变量或项目中的字体文件进行配置
+    preferred_font_paths = []
+    env_font_path = os.getenv("CHINESE_FONT_PATH")
+    if env_font_path and os.path.exists(env_font_path):
+        preferred_font_paths.append(env_font_path)
+
+    local_font_dir = os.path.join(os.path.dirname(__file__), "fonts")
+    for candidate in (
+        "NotoSansSC-Regular.otf",
+        "NotoSansCJKsc-Regular.otf",
+        "SourceHanSansCN-Regular.otf",
+        "SourceHanSansSC-Regular.otf",
+        "SimHei.ttf",
+        "msyh.ttc",
+    ):
+        candidate_path = os.path.join(local_font_dir, candidate)
+        if os.path.exists(candidate_path):
+            preferred_font_paths.append(candidate_path)
+
     preferred_fonts = [
         "SimHei",
         "WenQuanYi Micro Hei",
@@ -28,19 +58,33 @@ def configure_font_for_display():
         "Source Han Sans SC",
     ]
 
+    # 优先尝试显式提供的字体路径
+    for font_path in preferred_font_paths:
+        try:
+            font_manager.fontManager.addfont(font_path)
+            font_name = font_manager.FontProperties(fname=font_path).get_name()
+        except OSError:
+            continue
+
+        plt.rcParams["font.family"] = [font_name]
+        plt.rcParams["font.sans-serif"] = [font_name]
+        plt.rcParams["axes.unicode_minus"] = False
+        return font_name
+
     available_fonts = {f.name for f in font_manager.fontManager.ttflist}
 
     for font_name in preferred_fonts:
         if font_name in available_fonts:
-            plt.rcParams["font.family"] = font_name
+            plt.rcParams["font.family"] = [font_name]
             plt.rcParams["font.sans-serif"] = [font_name]
-            break
-    else:
-        # 回退到matplotlib默认字体，至少可以避免告警信息
-        default_family = plt.rcParams.get("font.family", ["DejaVu Sans"])  # type: ignore[arg-type]
-        plt.rcParams["font.family"] = default_family
+            plt.rcParams["axes.unicode_minus"] = False
+            return font_name
 
+    # 没有合适的中文字体时，回退到默认字体（英文提示），避免重复警告
+    default_family = plt.rcParams.get("font.family", ["DejaVu Sans"])  # type: ignore[arg-type]
+    plt.rcParams["font.family"] = default_family
     plt.rcParams["axes.unicode_minus"] = False
+    return None
 
 # 设备配置
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -280,10 +324,17 @@ def predict_image(pre_model, post_model, image_tensor):
         }
 
 
-def add_prediction_text(image, predictions):
-    """在图像右侧添加预测结果文本（修复中文显示，展示全部类别概率分布）"""
-    # 设置中文字体，解决中文显示问题
-    configure_font_for_display()
+def add_prediction_text(image, predictions, scale_factor=1.5):
+    """在图像右侧添加预测结果文本，并根据需要等比例放大输出。
+
+    参数:
+        image (PIL.Image.Image | torch.Tensor): 原始图像或张量。
+        predictions (dict): 遗忘前后模型的预测结果。
+        scale_factor (float): 图像与文本的整体缩放比例，默认 ``1.5``。
+    """
+
+    font_name = configure_font_for_display()
+    use_chinese_headings = font_name is not None
 
     # 将PyTorch张量转换为PIL图像（处理[-1,1]到[0,255]的转换）
     if isinstance(image, torch.Tensor):
@@ -292,21 +343,29 @@ def add_prediction_text(image, predictions):
         image = (image * 255).astype(np.uint8)  # 转换为[0,255]整数
         image = Image.fromarray(image)
 
+    scale_factor = max(scale_factor, 1.0)
+    scaled_width = int(round(image.width * scale_factor))
+    scaled_height = int(round(image.height * scale_factor))
+    if scale_factor != 1.0:
+        image = image.resize((scaled_width, scaled_height), resample=RESAMPLE_BICUBIC)
+    else:
+        scaled_width, scaled_height = image.width, image.height
+
     # 调整文本区域宽度以容纳全部10个类别（CIFAR10共10类）
-    text_area_width = 400  # 加宽文本区域，确保全部类别显示完整
-    new_width = image.width + text_area_width
-    new_image = Image.new('RGB', (new_width, image.height), color='white')
+    text_area_width = int(round(400 * scale_factor))  # 加宽文本区域，确保全部类别显示完整
+    new_width = scaled_width + text_area_width
+    new_image = Image.new('RGB', (new_width, scaled_height), color='white')
     new_image.paste(image, (0, 0))
 
     # 计算文本布局参数（适配全部10个类别的显示）
-    start_y = max(20, image.height * 0.05)  # 起始y坐标
-    line_spacing = max(18, image.height * 0.04)  # 增大行间距，避免10个类别重叠
-    font_size = min(8, int(image.height * 0.022))  # 微调字体大小，保证显示完整
+    start_y = max(int(round(20 * scale_factor)), int(scaled_height * 0.05))  # 起始y坐标
+    line_spacing = max(int(round(20 * scale_factor)), int(scaled_height * 0.045))  # 增大行间距，避免10个类别重叠
+    font_size = max(int(round(14 * scale_factor)), int(scaled_height * 0.026))  # 字体大小，保证可读性
 
     # 使用matplotlib添加文本
-    plt.figure(figsize=(new_width / 100, image.height / 100), dpi=100)
-    plt.imshow(new_image)
-    plt.axis('off')  # 关闭坐标轴
+    fig, ax = plt.subplots(figsize=(new_width / 100, scaled_height / 100), dpi=100)
+    ax.imshow(new_image)
+    ax.axis('off')  # 关闭坐标轴
 
     # 获取全部类别的概率（CIFAR10共10类）
     pre_probs = predictions['pre']['probabilities']
@@ -314,35 +373,52 @@ def add_prediction_text(image, predictions):
     num_classes = len(pre_probs)  # CIFAR10中应显示10个类别
 
     # 添加遗忘前模型预测（全部类别）
-    plt.text(image.width + 10, start_y, "遗忘前模型预测（全部类别）:", fontsize=font_size, fontweight='bold')
+    pre_heading = "遗忘前模型预测（全部类别）:" if use_chinese_headings else "Pre-unlearning predictions (all classes):"
+    ax.text(
+        scaled_width + 10,
+        start_y,
+        pre_heading,
+        fontsize=font_size,
+        fontweight='bold',
+        va='top'
+    )
     for class_idx, (class_name, prob) in enumerate(pre_probs):
-        plt.text(
-            image.width + 20,
+        ax.text(
+            scaled_width + 20,
             start_y + line_spacing * (class_idx + 1),  # 逐行显示
             f"{class_name}: {prob:.4f}",
-            fontsize=font_size
+            fontsize=font_size,
+            va='top'
         )
 
     # 添加遗忘后模型预测（全部类别），与前部分保持适当距离
     post_start_y = start_y + line_spacing * (num_classes + 2)  # 留出2行空白分隔
-    plt.text(image.width + 10, post_start_y, "遗忘后模型预测（全部类别）:", fontsize=font_size, fontweight='bold')
+    post_heading = "遗忘后模型预测（全部类别）:" if use_chinese_headings else "Post-unlearning predictions (all classes):"
+    ax.text(
+        scaled_width + 10,
+        post_start_y,
+        post_heading,
+        fontsize=font_size,
+        fontweight='bold',
+        va='top'
+    )
     for class_idx, (class_name, prob) in enumerate(post_probs):
-        plt.text(
-            image.width + 20,
+        ax.text(
+            scaled_width + 20,
             post_start_y + line_spacing * (class_idx + 1),
             f"{class_name}: {prob:.4f}",
-            fontsize=font_size
+            fontsize=font_size,
+            va='top'
         )
 
     # 保存到缓冲区并转换为PIL图像
     buf = io.BytesIO()
-    plt.tight_layout(pad=0)
-    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0)
+    fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.05)
     buf.seek(0)
     result_image = Image.open(buf)
 
     # 关闭matplotlib图形，释放资源
-    plt.close()
+    plt.close(fig)
 
     return result_image
 
@@ -377,7 +453,8 @@ def train_ddpm(ddpm, dataloader, epochs=100, lr=2e-4):
 
 # 5. 升级后的生成图像函数
 def generate_images(ddpm, pre_forget_model_path, post_forget_model_path,
-                    num_per_class=100, save_dir="generated_images_with_predictions"):
+                    num_per_class=100, save_dir="generated_images_with_predictions",
+                    scale_factor=1.5):
     os.makedirs(save_dir, exist_ok=True)
     ddpm.eval()
 
@@ -403,7 +480,7 @@ def generate_images(ddpm, pre_forget_model_path, post_forget_model_path,
                 predictions = predict_image(pre_model, post_model, img_tensor)
 
                 # 添加文本到图像
-                image_with_text = add_prediction_text(img_tensor, predictions)
+                image_with_text = add_prediction_text(img_tensor, predictions, scale_factor=scale_factor)
 
                 # 保存图像
                 img_path = os.path.join(class_dir, f"{i + j}.png")
@@ -429,3 +506,4 @@ if __name__ == "__main__":
     post_forget_path = "model/federated_cifar10_post_FedAF.pth"
     generate_images(ddpm, pre_forget_path, post_forget_path, num_per_class=100)
     print("生成完成！")
+
