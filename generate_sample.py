@@ -2,7 +2,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 import torch.nn.functional as F
@@ -20,13 +20,35 @@ transform = transforms.Compose([
     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # 标准化到[-1,1]
 ])
 
-# 加载CIFAR-10测试集
+# 加载CIFAR-10数据集
 dataset = datasets.CIFAR10(
     root='data',
-    train=False,  # 使用测试集
+    train=True,  # 使用训练集
     download=True,
     transform=transform
 )
+
+# 在保持与CIFAR-10同分布的情况下抽取10%的子集用于预训练
+subset_ratio = 0.1
+if hasattr(dataset, "targets"):
+    targets = np.array(dataset.targets)
+elif hasattr(dataset, "train_labels"):
+    targets = np.array(dataset.train_labels)
+else:
+    targets = np.array(dataset.test_labels)
+
+num_classes = len(getattr(dataset, "classes", np.unique(targets)))
+subset_indices = []
+
+for class_label in range(num_classes):
+    class_indices = np.where(targets == class_label)[0]
+    num_samples = max(1, int(len(class_indices) * subset_ratio))
+    selected_indices = np.random.choice(class_indices, num_samples, replace=False)
+    subset_indices.extend(selected_indices.tolist())
+
+np.random.shuffle(subset_indices)
+dataset = Subset(dataset, subset_indices)
+
 dataloader = DataLoader(
     dataset,
     batch_size=64,
@@ -35,8 +57,10 @@ dataloader = DataLoader(
 )
 
 # 类别名称
-classes = ('plane', 'car', 'bird', 'cat', 'deer',
-           'dog', 'frog', 'horse', 'ship', 'truck')
+classes = tuple(getattr(dataset.dataset, "classes", (
+    'plane', 'car', 'bird', 'cat', 'deer',
+    'dog', 'frog', 'horse', 'ship', 'truck'
+)))
 
 
 # 2. 扩散模型核心组件
