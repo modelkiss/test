@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import copy
 import time
 import os
+import shutil
 from collections import defaultdict
 
 # 设备配置（全局只定义一次，避免重复打印）
@@ -256,8 +257,8 @@ def fed_avg_aggregate(client_params_list):
     return global_params
 
 
-def evaluate_model(model, test_loader, return_class_acc=False):
-    """扩展：支持返回各类别准确率"""
+def evaluate_model(model, test_loader, return_class_acc=False, exclude_classes=None):
+    """扩展：支持返回各类别准确率，并可排除指定类别"""
     model.eval()
     model.to(device)
 
@@ -266,9 +267,24 @@ def evaluate_model(model, test_loader, return_class_acc=False):
     class_correct = defaultdict(int)
     class_total = defaultdict(int)
 
+    if exclude_classes is None:
+        exclude_classes = set()
+    else:
+        exclude_classes = set(exclude_classes)
+
     with torch.no_grad():
         for inputs, labels in test_loader:
             inputs, labels = inputs.to(device), labels.to(device)
+
+            # 跳过需要排除的类别
+            mask = torch.tensor(
+                [label.item() not in exclude_classes for label in labels], device=device, dtype=torch.bool
+            )
+            if mask.sum() == 0:
+                continue
+
+            inputs = inputs[mask]
+            labels = labels[mask]
             outputs = model(inputs)
             _, predicted = torch.max(outputs.data, 1)
 
@@ -282,7 +298,10 @@ def evaluate_model(model, test_loader, return_class_acc=False):
                 if pred == label:
                     class_correct[c] += 1
 
-    overall_acc = 100 * correct / total
+    if total == 0:
+        overall_acc = 0.0
+    else:
+        overall_acc = 100 * correct / total
 
     if not return_class_acc:
         return overall_acc
@@ -708,14 +727,53 @@ def main():
     else:
         print(f"模型保存文件夹已存在：{MODEL_SAVE_DIR}")
 
+    class ModelSaveManager:
+        def __init__(self, base_dir):
+            self.base_dir = base_dir
+            self.temp_dir = os.path.join(base_dir, "temp")
+            os.makedirs(self.temp_dir, exist_ok=True)
+            self.stage_paths = defaultdict(list)
+
+        def save_temp_model(self, stage, label, state_dict):
+            stage_dir = os.path.join(self.temp_dir, stage)
+            os.makedirs(stage_dir, exist_ok=True)
+            filename = f"{stage}_{label}.pth"
+            path = os.path.join(stage_dir, filename)
+            torch.save(state_dict, path)
+            self.stage_paths[stage].append(path)
+            return path
+
+        def finalize(self, stage, keep_last_n, target_dir):
+            if os.path.exists(target_dir):
+                shutil.rmtree(target_dir)
+            os.makedirs(target_dir, exist_ok=True)
+
+            kept_paths = self.stage_paths.get(stage, [])[-keep_last_n:]
+            for idx, path in enumerate(kept_paths, start=1):
+                dest = os.path.join(target_dir, f"{stage}_aggregation_{idx}.pth")
+                shutil.copy(path, dest)
+
+            # 清理临时文件
+            for stage_path in self.stage_paths.get(stage, []):
+                if os.path.exists(stage_path) and stage_path not in kept_paths:
+                    os.remove(stage_path)
+            stage_dir = os.path.join(self.temp_dir, stage)
+            if os.path.exists(stage_dir) and not os.listdir(stage_dir):
+                os.rmdir(stage_dir)
+
+    def create_excluded_test_loader(test_dataset, excluded_class, batch_size=100):
+        filtered_indices = [idx for idx, label in enumerate(test_dataset.targets) if label != excluded_class]
+        filtered_subset = torch.utils.data.Subset(test_dataset, filtered_indices)
+        return torch.utils.data.DataLoader(filtered_subset, batch_size=batch_size, shuffle=False, num_workers=2)
+
     # 超参数设置
     num_clients = 10
-    num_rounds = 20
     client_epochs = 5
     batch_size = 64
     lr = 0.001
     non_iid_alpha = 0.5
     client_fraction = 0.5
+    target_accuracy = 95.0
 
     # 1. 加载数据并划分客户端
     print("\n加载CIFAR10数据集...")
@@ -733,8 +791,10 @@ def main():
     global_model = CIFAR10CNN().to(device)
     global_params = global_model.state_dict()
     round_accuracies = []
+    save_manager = ModelSaveManager(MODEL_SAVE_DIR)
+    pre_round = 0
 
-    for round_idx in range(num_rounds):
+    while True:
         start_time = time.time()
         num_selected = max(1, int(num_clients * client_fraction))
         selected_clients = np.random.choice(range(num_clients), size=num_selected, replace=False)
@@ -753,12 +813,18 @@ def main():
         global_params = fed_avg_aggregate(client_params_list)
         global_model.load_state_dict(global_params)
 
+        pre_round += 1
         # 评估
         accuracy = evaluate_model(global_model, test_loader)
         round_accuracies.append(accuracy)
         round_time = time.time() - start_time
 
-        print(f"第 {round_idx + 1}/{num_rounds} 轮，测试准确率: {accuracy:.2f}%, 耗时: {round_time:.2f}s")
+        save_manager.save_temp_model("pre", f"round_{pre_round}", global_model.state_dict())
+        print(f"第 {pre_round} 次聚合，测试准确率: {accuracy:.2f}%, 耗时: {round_time:.2f}s")
+
+        if accuracy >= target_accuracy:
+            print(f"达到预设准确率 {target_accuracy}%，开始执行遗忘流程")
+            break
 
     # 3. 选择并执行联邦遗忘流程
     method_name, unlearning_func = select_unlearning_method()
@@ -768,20 +834,69 @@ def main():
         num_clients=num_clients, client_epochs=client_epochs, batch_size=batch_size, lr=lr
     )
 
+    # 保存遗忘流程产生的模型视为遗忘后聚合的一部分
+    save_manager.save_temp_model("post", "unlearning_result", unlearned_model.state_dict())
+
+    # 使用过滤后的数据继续训练直至达到目标准确率
+    print("\n=== 遗忘后继续联邦训练，直至达到目标准确率 ===")
+    filtered_client_datasets, _ = create_filtered_client_datasets(
+        client_datasets, client_raw_indices, train_targets, target_class
+    )
+    filtered_test_loader = create_excluded_test_loader(test_dataset, target_class, batch_size=100)
+
+    post_round = 0
+    post_accuracies = []
+    current_params = unlearned_model.state_dict()
+
+    while True:
+        start_time = time.time()
+        num_selected = max(1, int(num_clients * client_fraction))
+        selected_clients = np.random.choice(range(num_clients), size=num_selected, replace=False)
+
+        client_params_list = []
+        for client_id in selected_clients:
+            client_model = CIFAR10CNN().to(device)
+            client_model.load_state_dict(current_params)
+            client_params, client_size = client_train(
+                client_model, filtered_client_datasets[client_id],
+                epochs=client_epochs, batch_size=batch_size, lr=lr
+            )
+            client_params_list.append((client_params, client_size))
+
+        current_params = fed_avg_aggregate(client_params_list)
+        unlearned_model.load_state_dict(current_params)
+
+        post_round += 1
+        accuracy = evaluate_model(unlearned_model, filtered_test_loader, exclude_classes={target_class})
+        post_accuracies.append(accuracy)
+        round_time = time.time() - start_time
+
+        save_manager.save_temp_model("post", f"round_{post_round}", unlearned_model.state_dict())
+        print(f"遗忘后第 {post_round} 次聚合，过滤后测试准确率: {accuracy:.2f}%, 耗时: {round_time:.2f}s")
+
+        if accuracy >= target_accuracy:
+            print(f"遗忘后准确率达到 {target_accuracy}%，结束训练")
+            break
+
     # 4. 结果可视化
     print("\n=== 结果可视化 ===")
-    # 图1：正常联邦训练的准确率曲线
-    plt.figure(figsize=(15, 5))
+    plt.figure(figsize=(18, 5))
 
-    plt.subplot(1, 2, 1)
-    plt.plot(range(1, num_rounds + 1), round_accuracies, marker='o', linewidth=2, color='blue')
-    plt.xlabel('联邦训练轮数')
+    plt.subplot(1, 3, 1)
+    plt.plot(range(1, pre_round + 1), round_accuracies, marker='o', linewidth=2, color='blue')
+    plt.xlabel('联邦训练轮数（遗忘前）')
     plt.ylabel('测试准确率 (%)')
-    plt.title('正常联邦训练准确率变化')
+    plt.title('遗忘前联邦训练准确率变化')
     plt.grid(True)
 
-    # 图2：遗忘前后各类别准确率对比
-    plt.subplot(1, 2, 2)
+    plt.subplot(1, 3, 2)
+    plt.plot(range(1, post_round + 1), post_accuracies, marker='o', linewidth=2, color='green')
+    plt.xlabel('联邦训练轮数（遗忘后）')
+    plt.ylabel('过滤后测试准确率 (%)')
+    plt.title('遗忘后联邦训练准确率变化')
+    plt.grid(True)
+
+    plt.subplot(1, 3, 3)
     classes = CIFAR10_CLASSES
     x = np.arange(len(classes))
     width = 0.35
@@ -792,7 +907,6 @@ def main():
     bars1 = plt.bar(x - width / 2, pre_acc, width, label='遗忘前', color='lightblue')
     bars2 = plt.bar(x + width / 2, post_acc, width, label='遗忘后', color='lightcoral')
 
-    # 高亮目标类别
     bars1[target_class].set_color('blue')
     bars2[target_class].set_color('red')
 
@@ -804,16 +918,16 @@ def main():
     plt.tight_layout()
     plt.show()
 
-    # 保存模型
-    pre_unlearn_model_path = os.path.join(MODEL_SAVE_DIR, f"federated_cifar10_pre_{method_name}.pth")
-    post_unlearn_model_path = os.path.join(MODEL_SAVE_DIR, f"federated_cifar10_post_{method_name}.pth")
+    # 整理需要保留的模型
+    pre_save_dir = os.path.join(MODEL_SAVE_DIR, "pre_unlearning")
+    post_save_dir = os.path.join(MODEL_SAVE_DIR, "post_unlearning")
 
-    torch.save(global_model.state_dict(), pre_unlearn_model_path)
-    torch.save(unlearned_model.state_dict(), post_unlearn_model_path)
+    save_manager.finalize("pre", 5, pre_save_dir)
+    save_manager.finalize("post", 5, post_save_dir)
 
-    print("\n模型保存完成：")
-    print(f"  - 遗忘前模型：{pre_unlearn_model_path}")
-    print(f"  - 遗忘后模型：{post_unlearn_model_path}")
+    print("\n模型整理完成（仅保留前后各5个聚合模型）：")
+    print(f"  - 遗忘前模型目录：{pre_save_dir}")
+    print(f"  - 遗忘后模型目录：{post_save_dir}")
 
 
 if __name__ == "__main__":
