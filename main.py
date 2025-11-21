@@ -165,7 +165,7 @@ def main() -> None:
         f" and evaluation splits: {list(eval_loaders.keys())}"
     )
 
-    print(f"Building model '{exp_config.model.name}'...")
+    print(f"Building model '{exp_config.model.arch}'...")
     model = build_model(exp_config.model).to(exp_config.logging.device)
     print("Model built and moved to device.")
 
