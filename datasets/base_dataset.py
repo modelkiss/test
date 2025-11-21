@@ -109,6 +109,11 @@ class FederatedDataset(abc.ABC):
 
 
 def _extract_labels(dataset: Dataset) -> List[int]:
+    # torch Subset does not expose targets/labels, so unwrap and index manually
+    if isinstance(dataset, Subset):
+        base_labels = _extract_labels(dataset.dataset)
+        return [int(base_labels[i]) for i in dataset.indices]
+
     if hasattr(dataset, "targets"):
         targets = dataset.targets
     elif hasattr(dataset, "labels"):
