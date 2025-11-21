@@ -148,23 +148,38 @@ def dispatch_attack(
 
 def main() -> None:
     args = parse_args()
+    print(f"Loading experiment configuration from {args.config}...")
     exp_config = load_experiment_config(args.config)
+    print(
+        f"Configuration loaded for experiment '{exp_config.logging.experiment_name}'"
+        f" on device '{exp_config.logging.device}'."
+    )
 
     set_seed(exp_config.logging.seed)
     os.makedirs(exp_config.logging.output_dir, exist_ok=True)
 
+    print("Preparing federated dataloaders...")
     train_loaders, eval_loaders = get_federated_dataloaders(exp_config)
+    print(
+        f"Initialized {len(train_loaders)} client train loaders"
+        f" and evaluation splits: {list(eval_loaders.keys())}"
+    )
+
+    print(f"Building model '{exp_config.model.name}'...")
     model = build_model(exp_config.model).to(exp_config.logging.device)
+    print("Model built and moved to device.")
 
     if args.resume_path:
         state_dict = torch.load(args.resume_path, map_location=exp_config.logging.device)
         model.load_state_dict(state_dict)
+        print(f"Loaded pretrained weights from {args.resume_path}")
 
     training_log: TrainingLog | None = None
     unlearning_log: UnlearningLog | None = None
     relearn_log: TrainingLog | None = None
 
     if args.mode in {"full", "train_only"}:
+        print("Starting federated training stage...")
         clients, _ = build_clients(train_loaders, eval_loaders, exp_config)
         trainer = FederatedTrainer(
             model=model,
@@ -178,10 +193,12 @@ def main() -> None:
             training_log,
             os.path.join(exp_config.logging.output_dir, f"{exp_config.logging.experiment_name}_training_log.pt"),
         )
+        print("Training stage complete. Training log saved.")
 
     if args.mode in {"full", "unlearning_only", "attack_only"}:
         if training_log is None:
             raise RuntimeError("Training log required for unlearning/attack stages.")
+        print("Starting unlearning stage...")
         clients, _ = build_clients(train_loaders, eval_loaders, exp_config)
         unlearning_config = build_unlearning_config(exp_config, clients, model)
         unlearning_log = apply_unlearning(unlearning_config, training_log)
@@ -191,10 +208,15 @@ def main() -> None:
             unlearning_log,
             os.path.join(exp_config.logging.output_dir, f"{exp_config.logging.experiment_name}_unlearning_log.pt"),
         )
+        print("Unlearning stage complete. Unlearning log saved.")
 
         relearn_rounds = exp_config.unlearning.extra_params.get("relearn_rounds", 0)
         relearn_fraction = exp_config.unlearning.extra_params.get("relearn_client_fraction")
         if relearn_rounds > 0:
+            print(
+                f"Starting relearning for {relearn_rounds} rounds"
+                f" with client fraction {relearn_fraction}."
+            )
             clients, _ = build_clients(train_loaders, eval_loaders, exp_config)
             relearn_trainer = FederatedTrainer(
                 model=model,
@@ -215,11 +237,16 @@ def main() -> None:
                     f"{exp_config.logging.experiment_name}_relearn_log.pt",
                 ),
             )
+            print("Relearning stage complete. Relearning log saved.")
+        else:
+            print("Skipping relearning stage (no relearn rounds configured).")
 
     if exp_config.attack.enabled and args.mode in {"full", "attack_only"}:
         if training_log is None or unlearning_log is None:
             raise RuntimeError("Attack stage requires training and unlearning logs.")
+        print(f"Starting attack evaluation at '{exp_config.attack.level}' level...")
         dispatch_attack(exp_config, model, relearn_log or training_log, unlearning_log)
+        print("Attack evaluation complete. Metrics saved.")
 
     print("Experiment finished.")
 
