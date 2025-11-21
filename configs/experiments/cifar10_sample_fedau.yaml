@@ -1,0 +1,27 @@
+experiment_name: "cifar10_sample_fedau"
+
+dataset: "CIFAR10"
+model:
+  arch: "resnet18"
+  num_classes: 10
+  pretrained: false
+
+training: "default"
+
+unlearning:
+  level: "sample"
+  method: "FedAU"
+  target_samples: ["sample_0002"]
+  num_unlearning_rounds: 20
+
+attack:
+  level: "sample"
+  enabled: true
+  num_reconstruct_per_target: 256
+  topk_candidates: 5
+
+logging:
+  output_dir: "./runs"
+  seed: 321
+  log_interval: 10
+  device: "cuda"

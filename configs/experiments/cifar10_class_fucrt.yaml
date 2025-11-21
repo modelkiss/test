@@ -1,0 +1,27 @@
+experiment_name: "cifar10_class_fucrt"
+
+dataset: "CIFAR10"
+model:
+  arch: "resnet18"
+  num_classes: 10
+  pretrained: false
+
+training: "default"
+
+unlearning:
+  level: "class"
+  method: "FUCRT"
+  target_classes: [0, 1]
+  num_unlearning_rounds: 30
+
+attack:
+  level: "class"
+  enabled: true
+  num_reconstruct_per_target: 32
+  topk_candidates: 0
+
+logging:
+  output_dir: "./runs"
+  seed: 123
+  log_interval: 10
+  device: "cuda"

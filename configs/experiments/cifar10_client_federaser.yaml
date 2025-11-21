@@ -1,0 +1,27 @@
+experiment_name: "cifar10_client_federaser"
+
+dataset: "CIFAR10"
+model:
+  arch: "resnet18"
+  num_classes: 10
+  pretrained: false
+
+training: "default"
+
+unlearning:
+  level: "client"
+  method: "FedEraser"
+  target_clients: [0]
+  num_unlearning_rounds: 50
+
+attack:
+  level: "client"
+  enabled: true
+  num_reconstruct_per_target: 64
+  topk_candidates: 0
+
+logging:
+  output_dir: "./runs"
+  seed: 42
+  log_interval: 10
+  device: "cuda"

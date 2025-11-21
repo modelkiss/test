@@ -1,0 +1,35 @@
+CIFAR10:
+  name: CIFAR10
+  root: "./data/cifar10"
+  num_clients: 20
+  partition_type: "dirichlet"
+  noniid_alpha: 0.5
+  batch_size: 64
+  num_workers: 4
+
+CIFAR100:
+  name: CIFAR100
+  root: "./data/cifar100"
+  num_clients: 20
+  partition_type: "dirichlet"
+  noniid_alpha: 0.5
+  batch_size: 64
+  num_workers: 4
+
+FEMNIST:
+  name: FEMNIST
+  root: "./data/femnist"
+  num_clients: 100
+  partition_type: "user"
+  noniid_alpha: 0.0
+  batch_size: 32
+  num_workers: 4
+
+SVHN:
+  name: SVHN
+  root: "./data/svhn"
+  num_clients: 20
+  partition_type: "dirichlet"
+  noniid_alpha: 0.5
+  batch_size: 64
+  num_workers: 4
