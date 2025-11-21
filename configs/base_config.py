@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
+import torch
 import yaml
 
 
@@ -98,6 +99,8 @@ class ExperimentConfig:
 
     def __post_init__(self) -> None:
         self.seed = self.logging.seed
+        device_str = str(self.logging.device).lower()
+        pin_memory_default = device_str.startswith("cuda") and torch.cuda.is_available()
         self.federated = {
             "num_clients": self.dataset.num_clients,
             "partition": {
@@ -109,7 +112,7 @@ class ExperimentConfig:
             "batch_size": self.dataset.batch_size,
             "shuffle": True,
             "num_workers": self.dataset.num_workers,
-            "pin_memory": False,
+            "pin_memory": pin_memory_default,
         }
 
     def to_data_config(self) -> Dict[str, Any]:

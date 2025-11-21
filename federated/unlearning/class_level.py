@@ -50,8 +50,8 @@ class ClassLevelUnlearning(BaseUnlearning):
                 mask = ~torch.isin(targets, torch.tensor(self.forgotten_classes, device=targets.device))
                 if mask.sum() == 0:
                     continue
-                inputs = inputs[mask].to(device)
-                targets = targets[mask].to(device)
+                inputs = inputs[mask].to(device, non_blocking=True)
+                targets = targets[mask].to(device, non_blocking=True)
 
                 optimizer.zero_grad()
                 outputs = self.model(inputs)

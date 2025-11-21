@@ -72,8 +72,8 @@ def evaluate_model(
     with torch.no_grad():
         for batch in dataloader:
             inputs, targets = batch
-            inputs = inputs.to(device)
-            targets = targets.to(device)
+            inputs = inputs.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
             outputs = model(inputs)
             loss = loss_fn(outputs, targets)
             total_loss += loss.item() * targets.size(0)

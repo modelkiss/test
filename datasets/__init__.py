@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, Optional, Tuple
 
+import torch
 from torch.utils.data import DataLoader
 
 from .base_dataset import FederatedDataset
@@ -57,11 +58,16 @@ def get_federated_dataloaders(config: Any) -> Tuple[Dict[Any, DataLoader], Dict[
     dataset = get_dataset(config)
     client_indices = dataset.partition_federated()
 
+    device = str(_get_from_config(config, "logging.device", default="cpu")).lower()
+    pin_memory_default = device.startswith("cuda") and torch.cuda.is_available()
+
     loader_kwargs = {
         "batch_size": _get_from_config(config, "dataloader.batch_size", default=64),
         "shuffle": _get_from_config(config, "dataloader.shuffle", default=True),
         "num_workers": _get_from_config(config, "dataloader.num_workers", default=2),
-        "pin_memory": _get_from_config(config, "dataloader.pin_memory", default=False),
+        "pin_memory": _get_from_config(
+            config, "dataloader.pin_memory", default=pin_memory_default
+        ),
     }
 
     client_loaders: Dict[Any, DataLoader] = {}
