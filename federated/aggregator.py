@@ -43,10 +43,14 @@ class Aggregator:
         """Remove one client's contribution from the global model."""
 
         new_model = copy.deepcopy(global_model)
+        device = next(new_model.parameters()).device
         with torch.no_grad():
             for name, param in new_model.named_parameters():
                 if name in target_update.delta_params:
-                    param.sub_(target_update.delta_params[name])
+                    delta = target_update.delta_params[name]
+                    if delta.device != device:
+                        delta = delta.to(device)
+                    param.sub_(delta)
         return new_model
 
     def apply_weighted_updates(
