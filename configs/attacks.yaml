@@ -1,10 +1,10 @@
 default_diffusion:
-  model_name: "latent_diffusion_pretrained"
+  model_name: "openai_guided_diffusion_cifar"
   image_size: 32
-  num_inference_steps: 50
-  latent_lr: 0.1
+  num_inference_steps: 80
+  step_size: 0.02
   batch_size: 16
-  guidance_scale: 1.0
+  guidance_scale: 1.5
 
 client_level:
   enabled: true
