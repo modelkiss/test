@@ -29,15 +29,36 @@ def apply_unlearning(config: Any, training_log: TrainingLog) -> UnlearningLog:
     clients = _get_config_attr(config, "clients", [])
     aggregator = Aggregator(method=_get_config_attr(config, "aggregation_method", "fedavg"))
 
-    level = _get_config_attr(config, "unlearning_level", "client")
-    if level == "client":
+    method = _get_config_attr(config, "unlearning_method", "FedEraser")
+    level_hint = _get_config_attr(config, "unlearning_level", None)
+    method_to_level = {
+        "FedEraser": "client",
+        "FedRecovery": "client",
+        "FUCRT": "class",
+        "FUCP": "class",
+        "FedAF": "sample",
+        "FedAU": "sample",
+    }
+
+    if method not in method_to_level:
+        raise ValueError(
+            "Unsupported unlearning method: "
+            f"{method}. Choose one of {sorted(method_to_level.keys())}."
+        )
+
+    resolved_level = method_to_level[method]
+    if level_hint is not None and level_hint != resolved_level:
+        raise ValueError(
+            f"Unlearning method {method} belongs to level {resolved_level} "
+            f"but received level {level_hint}."
+        )
+
+    if resolved_level == "client":
         unlearning = ClientLevelUnlearning(model, training_log, config, aggregator, clients)
-    elif level == "class":
+    elif resolved_level == "class":
         unlearning = ClassLevelUnlearning(model, training_log, config)
-    elif level == "sample":
-        unlearning = SampleLevelUnlearning(model, training_log, config, aggregator, clients)
     else:
-        raise ValueError(f"Unsupported unlearning level: {level}")
+        unlearning = SampleLevelUnlearning(model, training_log, config, aggregator, clients)
 
     return unlearning.run()
 
