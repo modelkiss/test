@@ -30,21 +30,35 @@ def compute_model_gradients(
 ) -> MutableMapping[str, torch.Tensor]:
     """Compute gradients of a provided loss with respect to model parameters."""
 
-    model.zero_grad(set_to_none=True)
+    params: list[torch.nn.Parameter] = []
+    param_names: list[str] = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if layers_to_use and not any(pattern in name for pattern in layers_to_use):
+            continue
+        params.append(param)
+        param_names.append(name)
+
     outputs = model(images)
     if target_labels is not None:
         loss = loss_fn(outputs, target_labels)
     else:
         loss = loss_fn(outputs)
-    loss.backward()
+
+    grads = torch.autograd.grad(
+        loss,
+        params,
+        create_graph=True,
+        retain_graph=True,
+        allow_unused=True,
+    )
 
     gradients: MutableMapping[str, torch.Tensor] = {}
-    for name, param in model.named_parameters():
-        if param.grad is None:
+    for name, grad in zip(param_names, grads):
+        if grad is None:
             continue
-        if layers_to_use and not any(pattern in name for pattern in layers_to_use):
-            continue
-        gradients[name] = param.grad.detach().clone()
+        gradients[name] = grad
     return gradients
 
 
