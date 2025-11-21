@@ -79,6 +79,9 @@ def build_trainer_config(
         if exp_config.training.optimizer.lower() == "sgd"
         else torch.optim.Adam
     )
+    must_track_updates = exp_config.unlearning.level == "client"
+    track_client_updates = exp_config.training.track_client_updates or must_track_updates
+    tracked_client_ids = exp_config.unlearning.target_clients if must_track_updates else None
     return SimpleNamespace(
         num_rounds=override_rounds
         if override_rounds is not None
@@ -87,7 +90,8 @@ def build_trainer_config(
         if override_client_fraction is not None
         else exp_config.training.client_fraction,
         snapshot_interval=exp_config.training.record_global_every,
-        track_client_updates=True,
+        track_client_updates=track_client_updates,
+        tracked_client_ids=tracked_client_ids,
         seed=exp_config.logging.seed,
         loss_fn=torch.nn.CrossEntropyLoss(),
         optimizer_cls=optimizer_cls,
