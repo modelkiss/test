@@ -40,6 +40,7 @@ class TrainingConfig:
     lr: float
     weight_decay: float
     record_global_every: int
+    track_client_updates: bool = True
 
 
 @dataclass
@@ -134,7 +135,7 @@ class ExperimentConfig:
             num_rounds=self.training.num_rounds,
             client_fraction=self.training.client_fraction,
             snapshot_interval=self.training.record_global_every,
-            track_client_updates=True,
+            track_client_updates=self.training.track_client_updates,
             seed=self.logging.seed,
         )
 
@@ -292,6 +293,7 @@ def _build_training_config(value: Any, defaults: Dict[str, Any]) -> TrainingConf
         lr=float(data["lr"]),
         weight_decay=float(data["weight_decay"]),
         record_global_every=int(data["record_global_every"]),
+        track_client_updates=bool(data.get("track_client_updates", True)),
     )
 
 
