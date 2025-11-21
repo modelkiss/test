@@ -1,0 +1,33 @@
+default_diffusion:
+  model_name: "latent_diffusion_pretrained"
+  image_size: 32
+  num_inference_steps: 50
+  latent_lr: 0.1
+  batch_size: 16
+  guidance_scale: 1.0
+
+client_level:
+  enabled: true
+  num_reconstruct_per_target: 64
+  topk_candidates: 0
+  loss_weights:
+    grad: 1.0
+  diffusion: "default_diffusion"
+
+class_level:
+  enabled: true
+  num_reconstruct_per_target: 32
+  topk_candidates: 0
+  loss_weights:
+    grad: 1.0
+    cls: 0.5
+  diffusion: "default_diffusion"
+
+sample_level:
+  enabled: true
+  num_reconstruct_per_target: 256
+  topk_candidates: 5
+  loss_weights:
+    grad: 1.0
+    cls: 1.0
+  diffusion: "default_diffusion"

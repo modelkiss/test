@@ -1,0 +1,8 @@
+default:
+  num_rounds: 200
+  client_fraction: 0.2
+  local_epochs: 1
+  optimizer: "sgd"
+  lr: 0.01
+  weight_decay: 0.0005
+  record_global_every: 5

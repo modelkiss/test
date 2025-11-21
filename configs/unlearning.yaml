@@ -1,0 +1,29 @@
+client_level:
+  FedEraser:
+    num_unlearning_rounds: 50
+    extra_params:
+      reverse_steps: 10
+  FedRecovery:
+    num_unlearning_rounds: 50
+    extra_params:
+      recovery_epochs: 5
+
+class_level:
+  FUCRT:
+    num_unlearning_rounds: 30
+    extra_params:
+      reweight_factor: 1.0
+  FUCP:
+    num_unlearning_rounds: 30
+    extra_params:
+      projection_steps: 10
+
+sample_level:
+  FedAF:
+    num_unlearning_rounds: 20
+    extra_params:
+      af_steps: 5
+  FedAU:
+    num_unlearning_rounds: 20
+    extra_params:
+      au_steps: 5
