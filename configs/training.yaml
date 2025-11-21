@@ -6,3 +6,4 @@ default:
   lr: 0.01
   weight_decay: 0.0005
   record_global_every: 5
+  track_client_updates: false
