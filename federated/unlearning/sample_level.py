@@ -26,6 +26,12 @@ class SampleLevelUnlearning(BaseUnlearning):
         self.aggregator = aggregator
         self.clients = list(clients)
         self.method = _get_config_attr(config, "unlearning_method", "FedAF")
+        allowed_methods = {"FedAF", "FedAU"}
+        if self.method not in allowed_methods:
+            raise ValueError(
+                f"Unsupported sample-level unlearning method: {self.method}. "
+                f"Choose one of {sorted(allowed_methods)}."
+            )
 
     def select_targets(self) -> None:
         target = _get_config_attr(self.config, "forgotten_samples", [])

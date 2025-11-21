@@ -26,6 +26,12 @@ class ClientLevelUnlearning(BaseUnlearning):
         self.aggregator = aggregator
         self.clients = list(clients)
         self.method = _get_config_attr(config, "unlearning_method", "FedEraser")
+        allowed_methods = {"FedEraser", "FedRecovery"}
+        if self.method not in allowed_methods:
+            raise ValueError(
+                f"Unsupported client-level unlearning method: {self.method}. "
+                f"Choose one of {sorted(allowed_methods)}."
+            )
 
     def select_targets(self) -> None:
         self.forgotten_clients = list(_get_config_attr(self.config, "forgotten_clients", []))
