@@ -67,7 +67,7 @@ class SampleLevelUnlearning(BaseUnlearning):
                 updates.append(client.local_train(self.model, config_override))
 
             self.model = self.aggregator.aggregate(self.model, updates)
-            snapshots.append(utils.clone_model_state(self.model))
+            snapshots.append(utils.clone_model_state_to_cpu(self.model))
 
         return snapshots
 
