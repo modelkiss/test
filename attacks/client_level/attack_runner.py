@@ -33,19 +33,24 @@ def run_client_level_attack(
     )
 
     guidance = ClientLevelGuidance(model, target_signal, config.get("guidance", {}))
+    diffusion_cfg: Mapping[str, Any] = config.get("diffusion", {})
     prior = DiffusionPrior(
-        latent_shape=tuple(config.get("latent_shape", (3, 32, 32))),
-        decoder=config.get("decoder"),
+        model=config.get("diffusion_model"),
+        model_name=str(diffusion_cfg.get("model_name", "openai_guided_diffusion")),
+        image_size=int(diffusion_cfg.get("image_size", 32)),
+        num_inference_steps=int(diffusion_cfg.get("num_inference_steps", 10)),
+        guidance_scale=float(diffusion_cfg.get("guidance_scale", 1.0)),
         device=config.get("device", "cpu"),
     )
 
-    steps = int(config.get("num_steps", 10))
-    batch_size = int(config.get("batch_size", 4))
+    steps = int(diffusion_cfg.get("num_inference_steps", config.get("num_steps", prior.num_inference_steps)))
+    batch_size = int(diffusion_cfg.get("batch_size", config.get("batch_size", 4)))
+    step_size = float(diffusion_cfg.get("step_size", config.get("step_size", 0.02)))
     images, history = prior.guided_sampling(
         guidance_fn=guidance,
-        num_steps=steps,
         batch_size=batch_size,
-        opt_config=config.get("optim", {}),
+        step_size=step_size,
+        num_inference_steps=steps,
         save_history=config.get("save_history", False),
     )
 

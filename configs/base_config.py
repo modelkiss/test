@@ -58,7 +58,7 @@ class DiffusionConfig:
     model_name: str
     image_size: int
     num_inference_steps: int
-    latent_lr: float
+    step_size: float
     batch_size: int
     guidance_scale: float = 1.0
 
@@ -155,7 +155,7 @@ class ExperimentConfig:
                 "model_name": diffusion.model_name,
                 "image_size": diffusion.image_size,
                 "num_inference_steps": diffusion.num_inference_steps,
-                "latent_lr": diffusion.latent_lr,
+                "step_size": diffusion.step_size,
                 "batch_size": diffusion.batch_size,
                 "guidance_scale": diffusion.guidance_scale,
             }
@@ -325,7 +325,7 @@ def _build_diffusion_config(name_or_dict: Any, defaults: Dict[str, Any]) -> Diff
     else:
         raise ValueError("Diffusion config must be a string or mapping.")
 
-    required = ["model_name", "image_size", "num_inference_steps", "latent_lr", "batch_size"]
+    required = ["model_name", "image_size", "num_inference_steps", "step_size", "batch_size"]
     for key in required:
         if key not in data:
             raise ValueError(f"Missing diffusion config field: {key}")
@@ -334,7 +334,7 @@ def _build_diffusion_config(name_or_dict: Any, defaults: Dict[str, Any]) -> Diff
         model_name=str(data["model_name"]),
         image_size=int(data["image_size"]),
         num_inference_steps=int(data["num_inference_steps"]),
-        latent_lr=float(data["latent_lr"]),
+        step_size=float(data["step_size"]),
         batch_size=int(data["batch_size"]),
         guidance_scale=float(data.get("guidance_scale", 1.0)),
     )

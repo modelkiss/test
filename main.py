@@ -120,12 +120,15 @@ def dispatch_attack(
     unlearning_log: UnlearningLog,
 ) -> None:
     attack_level = exp_config.attack.level
-    attack_config = {
-        "forgotten_clients": exp_config.unlearning.target_clients,
-        "forgotten_classes": exp_config.unlearning.target_classes,
-        "forgotten_samples": exp_config.unlearning.target_samples,
-        "device": exp_config.logging.device,
-    }
+    attack_config = exp_config.to_attack_config()
+    attack_config.update(
+        {
+            "forgotten_clients": exp_config.unlearning.target_clients,
+            "forgotten_classes": exp_config.unlearning.target_classes,
+            "forgotten_samples": exp_config.unlearning.target_samples,
+            "device": exp_config.logging.device,
+        }
+    )
 
     if attack_level == "client":
         result = run_client_level_attack(attack_config, model, training_log, unlearning_log)
