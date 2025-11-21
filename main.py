@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from types import SimpleNamespace
-from typing import Dict, Tuple
+from typing import Any, Dict, Mapping, Tuple
 
 import torch
+from torchvision.utils import make_grid, save_image
 
 from attacks.class_level.attack_runner import run_class_level_attack
 from attacks.client_level.attack_runner import run_client_level_attack
@@ -145,9 +147,114 @@ def dispatch_attack(
 
     save_dir = os.path.join(exp_config.logging.output_dir, exp_config.logging.experiment_name, "attacks")
     os.makedirs(save_dir, exist_ok=True)
-    torch.save(result.metrics, os.path.join(save_dir, "attack_metrics.pt"))
+    metrics_payload = (
+        {cls: res.metrics for cls, res in result.items()}
+        if attack_level == "class"
+        else result.metrics
+    )
+    torch.save(metrics_payload, os.path.join(save_dir, "attack_metrics.pt"))
+
     if exp_config.attack.save_images:
-        torch.save(result.reconstructed_images, os.path.join(save_dir, "reconstructions.pt"))
+        reconstructions, preview_images = _extract_reconstructions_for_saving(attack_level, result)
+        if reconstructions is not None and preview_images is not None:
+            min_required = max(len(unlearning_log.forgotten_samples), 1)
+            reconstructions, preview_images = _enforce_minimum_image_count(
+                reconstructions, preview_images, min_required
+            )
+            torch.save(reconstructions, os.path.join(save_dir, "reconstructions.pt"))
+            _save_reconstruction_png(preview_images, save_dir, f"reconstructions_{attack_level}.png")
+
+
+def _extract_reconstructions_for_saving(
+    attack_level: str, result: Any
+) -> tuple[Any | None, torch.Tensor | None]:
+    """Normalize reconstruction outputs so they can be saved uniformly."""
+
+    if attack_level == "client":
+        images = result.reconstructed_images.detach().cpu()
+        return images, images
+
+    if attack_level == "class":
+        images_by_class = {
+            cls: res.reconstructed_images.detach().cpu() for cls, res in result.items()
+        }
+        flattened = [
+            res.reconstructed_images.detach().cpu()
+            for res in result.values()
+            if res.reconstructed_images.numel() > 0
+        ]
+        preview = torch.cat(flattened, dim=0) if flattened else torch.empty(0)
+        return images_by_class, preview
+
+    if attack_level == "sample":
+        candidate_images = [
+            cand.image.detach().cpu()
+            for cand in getattr(result, "top_candidates", [])
+            if hasattr(cand, "image")
+        ]
+        stacked = torch.stack(candidate_images) if candidate_images else torch.empty(0)
+        return stacked, stacked
+
+    return None, None
+
+
+def _enforce_minimum_image_count(
+    reconstructions: Any, preview_images: torch.Tensor, min_required: int
+) -> tuple[Any, torch.Tensor]:
+    """Ensure saved artifacts include at least ``min_required`` images."""
+
+    adjusted_preview = _ensure_minimum_images(preview_images, min_required)
+
+    if isinstance(reconstructions, torch.Tensor):
+        adjusted_reconstructions: Any = _ensure_minimum_images(reconstructions, min_required)
+    elif isinstance(reconstructions, Mapping):
+        adjusted_reconstructions = dict(reconstructions)
+        total = sum(
+            tensor.shape[0]
+            for tensor in adjusted_reconstructions.values()
+            if isinstance(tensor, torch.Tensor)
+        )
+        missing = max(min_required - total, 0)
+        if missing > 0:
+            for key in reversed(list(adjusted_reconstructions.keys())):
+                tensor = adjusted_reconstructions[key]
+                if isinstance(tensor, torch.Tensor) and tensor.numel() > 0:
+                    adjusted_reconstructions[key] = _ensure_minimum_images(
+                        tensor, tensor.shape[0] + missing
+                    )
+                    break
+    else:
+        adjusted_reconstructions = reconstructions
+
+    return adjusted_reconstructions, adjusted_preview
+
+
+def _ensure_minimum_images(images: torch.Tensor, min_required: int) -> torch.Tensor:
+    """Pad the image batch by repeating samples until the minimum count is met."""
+
+    if images is None or images.numel() == 0:
+        return images
+
+    batch = images.shape[0]
+    if batch >= min_required:
+        return images
+
+    repeats = math.ceil(min_required / batch)
+    tiled = images.repeat((repeats, 1, 1, 1))
+    return tiled[:min_required]
+
+
+def _save_reconstruction_png(images: torch.Tensor, save_dir: str, filename: str) -> None:
+    """Save a grid preview of reconstructions to disk."""
+
+    if images is None or images.numel() == 0:
+        print("No reconstructed images available for visualization.")
+        return
+
+    grid = make_grid(images, nrow=min(8, images.shape[0]), normalize=True, value_range=(-1, 1))
+    save_path = os.path.join(save_dir, filename)
+    save_image(grid, save_path)
+    print(f"Saved reconstruction preview to {save_path}")
 
 
 def main() -> None:
