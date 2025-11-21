@@ -27,6 +27,8 @@ class Aggregator:
         for update in client_updates:
             weight = update.num_samples / max(total_samples, 1)
             for name, delta in update.delta_params.items():
+                if not delta.is_floating_point():
+                    continue
                 aggregated_delta[name] += weight * delta
 
         new_model = copy.deepcopy(global_model)
@@ -64,5 +66,7 @@ class Aggregator:
 
     def _initialize_zero_delta(self, example_update: ClientUpdate):
         return {
-            name: torch.zeros_like(delta) for name, delta in example_update.delta_params.items()
+            name: torch.zeros_like(delta)
+            for name, delta in example_update.delta_params.items()
+            if delta.is_floating_point()
         }
