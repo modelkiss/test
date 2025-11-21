@@ -68,11 +68,24 @@ def build_clients(
     return clients, eval_loaders.get("test")
 
 
-def build_trainer_config(exp_config: ExperimentConfig) -> SimpleNamespace:
-    optimizer_cls = torch.optim.SGD if exp_config.training.optimizer.lower() == "sgd" else torch.optim.Adam
+def build_trainer_config(
+    exp_config: ExperimentConfig,
+    *,
+    override_rounds: int | None = None,
+    override_client_fraction: float | None = None,
+) -> SimpleNamespace:
+    optimizer_cls = (
+        torch.optim.SGD
+        if exp_config.training.optimizer.lower() == "sgd"
+        else torch.optim.Adam
+    )
     return SimpleNamespace(
-        num_rounds=exp_config.training.num_rounds,
-        client_fraction=exp_config.training.client_fraction,
+        num_rounds=override_rounds
+        if override_rounds is not None
+        else exp_config.training.num_rounds,
+        client_fraction=override_client_fraction
+        if override_client_fraction is not None
+        else exp_config.training.client_fraction,
         snapshot_interval=exp_config.training.record_global_every,
         track_client_updates=True,
         seed=exp_config.logging.seed,
@@ -146,6 +159,7 @@ def main() -> None:
 
     training_log: TrainingLog | None = None
     unlearning_log: UnlearningLog | None = None
+    relearn_log: TrainingLog | None = None
 
     if args.mode in {"full", "train_only"}:
         clients, _ = build_clients(train_loaders, eval_loaders, exp_config)
@@ -156,6 +170,7 @@ def main() -> None:
             config=build_trainer_config(exp_config),
         )
         training_log = trainer.run()
+        model.load_state_dict(trainer.global_model.state_dict())
         torch.save(
             training_log,
             os.path.join(exp_config.logging.output_dir, f"{exp_config.logging.experiment_name}_training_log.pt"),
@@ -167,15 +182,41 @@ def main() -> None:
         clients, _ = build_clients(train_loaders, eval_loaders, exp_config)
         unlearning_config = build_unlearning_config(exp_config, clients, model)
         unlearning_log = apply_unlearning(unlearning_config, training_log)
+        if unlearning_log.final_model_state is not None:
+            model.load_state_dict(unlearning_log.final_model_state)
         torch.save(
             unlearning_log,
             os.path.join(exp_config.logging.output_dir, f"{exp_config.logging.experiment_name}_unlearning_log.pt"),
         )
 
+        relearn_rounds = exp_config.unlearning.extra_params.get("relearn_rounds", 0)
+        relearn_fraction = exp_config.unlearning.extra_params.get("relearn_client_fraction")
+        if relearn_rounds > 0:
+            clients, _ = build_clients(train_loaders, eval_loaders, exp_config)
+            relearn_trainer = FederatedTrainer(
+                model=model,
+                clients=clients,
+                aggregator=Aggregator(),
+                config=build_trainer_config(
+                    exp_config,
+                    override_rounds=relearn_rounds,
+                    override_client_fraction=relearn_fraction,
+                ),
+            )
+            relearn_log = relearn_trainer.run()
+            model.load_state_dict(relearn_trainer.global_model.state_dict())
+            torch.save(
+                relearn_log,
+                os.path.join(
+                    exp_config.logging.output_dir,
+                    f"{exp_config.logging.experiment_name}_relearn_log.pt",
+                ),
+            )
+
     if exp_config.attack.enabled and args.mode in {"full", "attack_only"}:
         if training_log is None or unlearning_log is None:
             raise RuntimeError("Attack stage requires training and unlearning logs.")
-        dispatch_attack(exp_config, model, training_log, unlearning_log)
+        dispatch_attack(exp_config, model, relearn_log or training_log, unlearning_log)
 
     print("Experiment finished.")
 

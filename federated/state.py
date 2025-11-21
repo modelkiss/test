@@ -13,6 +13,7 @@ class TrainingLog:
     round_client_ids: List[List[Any]] = field(default_factory=list)
     client_updates: Dict[int, Dict[Any, Any]] = field(default_factory=dict)
     train_metrics: Dict[str, List[float]] = field(default_factory=dict)
+    final_model_state: Optional[Mapping[str, Any]] = None
 
     def add_snapshot(self, state_dict: Mapping[str, Any]) -> None:
         self.global_model_snapshots.append(state_dict)
@@ -35,6 +36,7 @@ class UnlearningLog:
     forgotten_classes: List[Any] = field(default_factory=list)
     forgotten_samples: List[Any] = field(default_factory=list)
     unlearning_metrics: Dict[str, List[float]] = field(default_factory=dict)
+    final_model_state: Optional[Mapping[str, Any]] = None
 
     def add_snapshot(self, state_dict: Mapping[str, Any]) -> None:
         self.global_model_snapshots_after_unlearning.append(state_dict)

@@ -40,6 +40,7 @@ class BaseUnlearning(ABC):
             forgotten_classes=list(self.forgotten_classes),
             forgotten_samples=list(self.forgotten_samples),
             unlearning_metrics=self.metrics,
+            final_model_state=self._clone_current_state(),
         )
 
     def run(self) -> UnlearningLog:
@@ -48,6 +49,9 @@ class BaseUnlearning(ABC):
         return self.build_unlearning_log(snapshots)
 
     def _load_training_terminal_model(self) -> None:
+        if self.training_log.final_model_state is not None:
+            self.model.load_state_dict(self.training_log.final_model_state)
+            return
         if self.training_log.global_model_snapshots:
             last_snapshot = self.training_log.global_model_snapshots[-1]
             self.model.load_state_dict(last_snapshot)

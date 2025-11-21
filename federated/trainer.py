@@ -63,6 +63,10 @@ class FederatedTrainer:
             if (round_idx + 1) % snapshot_interval == 0:
                 training_log.add_snapshot(utils.clone_model_state(self.global_model))
 
+        # Ensure the terminal global model is always recorded for downstream steps.
+        training_log.add_snapshot(utils.clone_model_state(self.global_model))
+        training_log.final_model_state = utils.clone_model_state(self.global_model)
+
         return training_log
 
     def _sample_clients(self, client_fraction: float) -> List[FederatedClient]:
