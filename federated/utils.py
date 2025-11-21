@@ -23,6 +23,12 @@ def clone_model_state(model: torch.nn.Module) -> Mapping[str, torch.Tensor]:
     return {k: v.clone().detach() for k, v in model.state_dict().items()}
 
 
+def clone_model_state_to_cpu(model: torch.nn.Module) -> Mapping[str, torch.Tensor]:
+    """Clone the model state and move all tensors to CPU for logging/storage."""
+
+    return {k: v.clone().detach().cpu() for k, v in model.state_dict().items()}
+
+
 def save_model_snapshot(state_dict: Mapping[str, torch.Tensor], path: str) -> None:
     """Persist a model snapshot to disk."""
 

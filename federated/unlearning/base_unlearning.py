@@ -57,4 +57,4 @@ class BaseUnlearning(ABC):
             self.model.load_state_dict(last_snapshot)
 
     def _clone_current_state(self) -> Mapping[str, torch.Tensor]:
-        return utils.clone_model_state(self.model)
+        return utils.clone_model_state_to_cpu(self.model)

@@ -63,7 +63,7 @@ class ClassLevelUnlearning(BaseUnlearning):
 
             average_loss = epoch_loss / max(seen_samples, 1)
             self.metrics.setdefault("retrain_loss", []).append(average_loss)
-            snapshots.append(utils.clone_model_state(self.model))
+            snapshots.append(utils.clone_model_state_to_cpu(self.model))
 
         return snapshots
 
