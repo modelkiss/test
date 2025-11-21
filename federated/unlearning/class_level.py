@@ -15,6 +15,12 @@ class ClassLevelUnlearning(BaseUnlearning):
     def __init__(self, model: torch.nn.Module, training_log, config: Any):
         super().__init__(model, training_log, config)
         self.method = _get_config_attr(config, "unlearning_method", "FUCRT")
+        allowed_methods = {"FUCRT", "FUCP"}
+        if self.method not in allowed_methods:
+            raise ValueError(
+                f"Unsupported class-level unlearning method: {self.method}. "
+                f"Choose one of {sorted(allowed_methods)}."
+            )
 
     def select_targets(self) -> None:
         self.forgotten_classes = list(_get_config_attr(self.config, "forgotten_classes", []))
