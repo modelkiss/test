@@ -55,8 +55,8 @@ class FederatedClient:
         for _ in range(self.local_epochs):
             for batch in self.train_loader:
                 inputs, targets = batch
-                inputs = inputs.to(self.device)
-                targets = targets.to(self.device)
+                inputs = inputs.to(self.device, non_blocking=True)
+                targets = targets.to(self.device, non_blocking=True)
                 optimizer.zero_grad()
                 outputs = model(inputs)
                 loss = loss_fn(outputs, targets)
