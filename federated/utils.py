@@ -18,9 +18,22 @@ def set_random_seed(seed: int) -> None:
 
 
 def clone_model_state(model: torch.nn.Module) -> Mapping[str, torch.Tensor]:
-    """Return a deep copy of a model's state dict."""
+    """Return a deep copy of a model's state dict on CPU."""
 
-    return {k: v.clone().detach() for k, v in model.state_dict().items()}
+    return {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+
+def clone_client_update(update) -> "ClientUpdate":  # type: ignore[name-defined]
+    """Deep copy a :class:`ClientUpdate` and move tensors to CPU.
+
+    The function is defined here to avoid a circular import between
+    ``federated.utils`` and ``federated.client``.
+    """
+
+    from .client import ClientUpdate  # Local import to prevent cycle
+
+    delta = {name: tensor.detach().cpu().clone() for name, tensor in update.delta_params.items()}
+    return ClientUpdate(delta_params=delta, num_samples=update.num_samples, metrics=dict(update.metrics))
 
 
 def save_model_snapshot(state_dict: Mapping[str, torch.Tensor], path: str) -> None:

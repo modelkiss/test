@@ -39,6 +39,7 @@ class FederatedTrainer:
         track_client_updates = _get_config_attr(
             self.config, "track_client_updates", True
         )
+        tracked_client_ids = _get_config_attr(self.config, "tracked_client_ids", None)
 
         training_log = TrainingLog()
 
@@ -58,7 +59,13 @@ class FederatedTrainer:
 
             training_log.add_round_clients([c.client_id for c in selected_clients])
             if track_client_updates:
-                training_log.add_client_updates(round_idx, round_updates)
+                filtered = {
+                    cid: utils.clone_client_update(update)
+                    for cid, update in round_updates.items()
+                    if tracked_client_ids is None or cid in tracked_client_ids
+                }
+                if filtered:
+                    training_log.add_client_updates(round_idx, filtered)
 
             if (round_idx + 1) % snapshot_interval == 0:
                 training_log.add_snapshot(utils.clone_model_state(self.global_model))

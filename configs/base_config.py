@@ -135,6 +135,7 @@ class ExperimentConfig:
             client_fraction=self.training.client_fraction,
             snapshot_interval=self.training.record_global_every,
             track_client_updates=True,
+            tracked_client_ids=list(self.unlearning.target_clients),
             seed=self.logging.seed,
         )
 
