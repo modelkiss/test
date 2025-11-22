@@ -41,6 +41,7 @@ class TrainingConfig:
     weight_decay: float
     record_global_every: int
     track_client_updates: bool = True
+    local_privacy: Dict[str, Any] | None = None
 
 
 @dataclass
@@ -294,6 +295,7 @@ def _build_training_config(value: Any, defaults: Dict[str, Any]) -> TrainingConf
         weight_decay=float(data["weight_decay"]),
         record_global_every=int(data["record_global_every"]),
         track_client_updates=bool(data.get("track_client_updates", True)),
+        local_privacy=dict(data.get("local_privacy", {})) if data.get("local_privacy") else None,
     )
 
 
