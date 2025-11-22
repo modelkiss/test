@@ -40,7 +40,15 @@ def run_client_level_attack(
         raise ValueError("No target clients provided for client-level attack.")
 
     target_cfg = config.get("target_builder", {}) if isinstance(config, dict) else {}
-    targets = build_client_level_targets(model_state, target_clients, target_cfg)
+
+    federated_state: Dict[str, Any] = {
+        "model": model_state,
+        "training_log": training_log,
+        "unlearning_log": unlearning_log,
+        "client_updates": getattr(training_log, "client_updates", {}),
+    }
+
+    targets = build_client_level_targets(federated_state, target_clients, target_cfg)
 
     stage1_weights = get_client_level_stage1_weights(config.get("stage1_weights", {}))
     stage2_weights = get_client_level_stage2_weights(config.get("stage2_weights", {}))
