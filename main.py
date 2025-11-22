@@ -5,7 +5,7 @@ import argparse
 import math
 import os
 from types import SimpleNamespace
-from typing import Any, Dict, Mapping, Tuple
+from typing import Any, Dict, Iterable, Mapping, Tuple
 
 import torch
 from torchvision.utils import make_grid, save_image
@@ -246,20 +246,33 @@ def _extract_reconstructions_for_saving(
     """Normalize reconstruction outputs so they can be saved uniformly."""
 
     if attack_level == "client":
-        images = result.reconstructed_images.detach().cpu()
+        images = _coalesce_tensor_images(
+            getattr(result, "reconstructed_images", None),
+            getattr(result, "final_images", None),
+            getattr(result, "pseudo_images", None),
+        )
         return images, images
 
     if attack_level == "class":
-        images_by_class = {
-            cls: res.reconstructed_images.detach().cpu() for cls, res in result.items()
-        }
-        flattened = [
-            res.reconstructed_images.detach().cpu()
-            for res in result.values()
-            if res.reconstructed_images.numel() > 0
-        ]
-        preview = torch.cat(flattened, dim=0) if flattened else torch.empty(0)
-        return images_by_class, preview
+        if isinstance(result, Mapping):
+            images_by_class = {
+                cls: _coalesce_tensor_images(
+                    getattr(res, "reconstructed_images", None),
+                    getattr(res, "final_images", None),
+                    getattr(res, "pseudo_images", None),
+                )
+                for cls, res in result.items()
+            }
+            flattened = [img for img in images_by_class.values() if isinstance(img, torch.Tensor) and img.numel() > 0]
+            preview = torch.cat(flattened, dim=0) if flattened else torch.empty(0)
+            return images_by_class, preview
+
+        images = _coalesce_tensor_images(
+            getattr(result, "reconstructed_images", None),
+            getattr(result, "final_images", None),
+            getattr(result, "pseudo_images", None),
+        )
+        return images, images
 
     if attack_level == "sample":
         candidate_images = [
@@ -271,6 +284,54 @@ def _extract_reconstructions_for_saving(
         return stacked, stacked
 
     return None, None
+
+
+def _coalesce_tensor_images(*candidates: Any) -> torch.Tensor:
+    """Extract the first available image batch from heterogeneous containers."""
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+
+        if isinstance(candidate, torch.Tensor):
+            return _ensure_batch(candidate.detach().cpu())
+
+        if isinstance(candidate, Mapping):
+            stacked = _stack_tensor_collection(candidate.values())
+            if stacked is not None:
+                return stacked
+
+        if isinstance(candidate, (list, tuple)):
+            stacked = _stack_tensor_collection(candidate)
+            if stacked is not None:
+                return stacked
+
+    return torch.empty(0)
+
+
+def _stack_tensor_collection(items: Iterable[Any]) -> torch.Tensor | None:
+    tensors = []
+    for item in items:
+        if isinstance(item, torch.Tensor):
+            tensors.append(_ensure_batch(item.detach().cpu()))
+        elif isinstance(item, (list, tuple)):
+            for sub in item:
+                if isinstance(sub, torch.Tensor):
+                    tensors.append(_ensure_batch(sub.detach().cpu()))
+
+    if not tensors:
+        return None
+
+    try:
+        return torch.cat(tensors, dim=0)
+    except Exception:
+        return torch.stack(tensors)
+
+
+def _ensure_batch(tensor: torch.Tensor) -> torch.Tensor:
+    """Guarantee the first dimension represents batch size."""
+
+    return tensor.unsqueeze(0) if tensor.dim() == 3 else tensor
 
 
 def _enforce_minimum_image_count(
