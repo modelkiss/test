@@ -13,6 +13,9 @@ unlearning:
   method: "FedEraser"
   target_clients: [0]
   num_unlearning_rounds: 50
+  # After removing the target client's contribution, continue recovery-style
+  # training for 20 additional aggregation rounds to refine the global model.
+  recovery_rounds: 20
 
 attack:
   level: "client"
