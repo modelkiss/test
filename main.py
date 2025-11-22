@@ -275,12 +275,23 @@ def _extract_reconstructions_for_saving(
         return images, images
 
     if attack_level == "sample":
-        candidate_images = [
-            cand.image.detach().cpu()
-            for cand in getattr(result, "top_candidates", [])
-            if hasattr(cand, "image")
-        ]
-        stacked = torch.stack(candidate_images) if candidate_images else torch.empty(0)
+        collected: list[torch.Tensor] = []
+
+        for cand in getattr(result, "top_candidates", []):
+            if hasattr(cand, "image"):
+                collected.append(_ensure_batch(cand.image.detach().cpu()))
+
+        final_images = getattr(result, "final_images", {})
+        if isinstance(final_images, Mapping):
+            for images in final_images.values():
+                if isinstance(images, torch.Tensor):
+                    collected.append(_ensure_batch(images.detach().cpu()))
+                elif isinstance(images, (list, tuple)):
+                    for img in images:
+                        if isinstance(img, torch.Tensor):
+                            collected.append(_ensure_batch(img.detach().cpu()))
+
+        stacked = _stack_tensor_collection(collected) or torch.empty(0)
         return stacked, stacked
 
     return None, None
@@ -381,7 +392,12 @@ def _ensure_minimum_images(images: torch.Tensor, min_required: int) -> torch.Ten
 
 
 def _save_reconstruction_png(images: torch.Tensor, save_dir: str, filename: str) -> None:
-    """Save a grid preview of reconstructions to disk."""
+    """Save a grid preview of reconstructions to ``save_dir/filename``.
+
+    PNGs are always written into the experiment's ``attacks`` output
+    directory (i.e., ``<output_dir>/<experiment_name>/attacks``), so
+    downstream consumers know where to find them.
+    """
 
     if images is None or images.numel() == 0:
         print("No reconstructed images available for visualization.")
