@@ -18,7 +18,10 @@ class DiffusionCheckpoint:
 
 
 def ensure_local_diffusion_checkpoint(
-    model_name: str, target_dir: str = "SD", filename: Optional[str] = None
+    model_name: str,
+    target_dir: str = "SD",
+    filename: Optional[str] = None,
+    format_hint: Optional[str] = "ckpt",
 ) -> DiffusionCheckpoint:
     """确保本地存在可用的扩散模型权重。
 
@@ -28,16 +31,36 @@ def ensure_local_diffusion_checkpoint(
     """
 
     os.makedirs(target_dir, exist_ok=True)
-    ckpt_name = filename or f"{model_name}.ckpt"
+
+    # 自动从文件名或者格式提示中推导扩展名，便于直接使用 .safetensors 等单文件权重。
+    ext_hint = None
+    if filename and "." in filename:
+        ext_hint = filename.split(".")[-1].lower()
+    elif format_hint:
+        ext_hint = format_hint.lstrip(".").lower()
+
+    ckpt_name = filename or f"{model_name}.{ext_hint or 'ckpt'}"
     ckpt_path = os.path.join(target_dir, ckpt_name)
 
     downloaded = os.path.exists(ckpt_path)
     note = ""
 
     if not downloaded:
-        note = (
-            "Placeholder checkpoint created. Replace with actual diffusion weights "
-            "for full reconstruction fidelity."
+        suffix = ext_hint or "ckpt"
+        load_hint = (
+            "Use StableDiffusionPipeline.from_single_file for safetensors checkpoints."
+            if suffix == "safetensors"
+            else ""
+        )
+        note = " ".join(
+            filter(
+                None,
+                [
+                    f"Placeholder {suffix} checkpoint created.",
+                    "Replace with actual diffusion weights for full reconstruction fidelity.",
+                    load_hint,
+                ],
+            )
         )
         with open(ckpt_path, "w", encoding="utf-8") as f:
             f.write(
