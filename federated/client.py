@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 
 import torch
 
@@ -30,6 +30,7 @@ class FederatedClient:
         local_epochs: int = 1,
         lr: float = 0.01,
         device: str = "cpu",
+        dp_config: Mapping[str, Any] | None = None,
     ) -> None:
         self.client_id = client_id
         self.train_loader = train_loader
@@ -37,6 +38,11 @@ class FederatedClient:
         self.local_epochs = local_epochs
         self.lr = lr
         self.device = device
+        self.dp_enabled = bool(dp_config.get("enabled", False)) if dp_config else False
+        self.dp_clip_norm = float(dp_config.get("clip_norm", 1.0)) if dp_config else 1.0
+        self.dp_noise_multiplier = (
+            float(dp_config.get("noise_multiplier", 0.0)) if dp_config else 0.0
+        )
 
     def local_train(self, model: torch.nn.Module, config: Any) -> ClientUpdate:
         """Run local training and return the resulting update."""
@@ -61,6 +67,19 @@ class FederatedClient:
                 outputs = model(inputs)
                 loss = loss_fn(outputs, targets)
                 loss.backward()
+                if self.dp_enabled:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), self.dp_clip_norm)
+                    if self.dp_noise_multiplier > 0:
+                        for param in model.parameters():
+                            if param.grad is None:
+                                continue
+                            noise = torch.normal(
+                                0,
+                                self.dp_noise_multiplier,
+                                size=param.grad.shape,
+                                device=param.grad.device,
+                            )
+                            param.grad.add_(noise)
                 optimizer.step()
                 total_loss += loss.item() * targets.size(0)
                 total_samples += targets.size(0)

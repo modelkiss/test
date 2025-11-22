@@ -52,6 +52,7 @@ def build_clients(
     train_loaders: Dict[int, torch.utils.data.DataLoader],
     eval_loaders: Dict[str, torch.utils.data.DataLoader],
     exp_config: ExperimentConfig,
+    dp_config: Mapping[str, Any] | None = None,
 ) -> Tuple[list[FederatedClient], torch.utils.data.DataLoader | None]:
     """Construct :class:`FederatedClient` objects for each client."""
 
@@ -64,6 +65,7 @@ def build_clients(
             local_epochs=exp_config.training.local_epochs,
             lr=exp_config.training.lr,
             device=exp_config.logging.device,
+            dp_config=dp_config,
         )
         for client_id, loader in train_loaders.items()
     ]
@@ -117,6 +119,79 @@ def build_unlearning_config(
     config.retrain_rounds = getattr(config, "retrain_rounds", exp_config.unlearning.num_unlearning_rounds)
     config.recovery_rounds = getattr(config, "recovery_rounds", exp_config.unlearning.extra_params.get("recovery_epochs", 0))
     return config
+
+
+def configure_local_privacy(exp_config: ExperimentConfig) -> Mapping[str, Any] | None:
+    """Resolve client-side differential privacy settings if provided."""
+
+    dp_cfg = getattr(exp_config.training, "local_privacy", None)
+    if not dp_cfg or not dp_cfg.get("enabled", False):
+        print("Local differential privacy is disabled for clients.")
+        return None
+
+    resolved = {
+        "enabled": True,
+        "clip_norm": float(dp_cfg.get("clip_norm", 1.0)),
+        "noise_multiplier": float(dp_cfg.get("noise_multiplier", 0.0)),
+    }
+    print(
+        "Enabling client-side differential privacy with clip_norm=",
+        resolved["clip_norm"],
+        " noise_multiplier=",
+        resolved["noise_multiplier"],
+    )
+    return resolved
+
+
+def save_tail_model_snapshots(
+    training_log: TrainingLog, exp_config: ExperimentConfig, keep_last: int = 5
+) -> list[str]:
+    """Persist the final ``keep_last`` global models for later gradient diffing."""
+
+    snapshots = list(training_log.global_model_snapshots[-keep_last:])
+    if not snapshots and training_log.final_model_state is not None:
+        snapshots = [training_log.final_model_state]
+
+    save_dir = os.path.join(
+        exp_config.logging.output_dir, exp_config.logging.experiment_name, "snapshots"
+    )
+    os.makedirs(save_dir, exist_ok=True)
+
+    saved_paths: list[str] = []
+    for idx, state in enumerate(snapshots):
+        path = os.path.join(save_dir, f"global_round_tail_{idx}.pt")
+        torch.save(state, path)
+        saved_paths.append(path)
+
+    print(
+        f"Saved {len(saved_paths)} trailing global model snapshots to '{save_dir}' for gradient analysis."
+    )
+    return saved_paths
+
+
+def save_initial_unlearned_model(
+    unlearning_log: UnlearningLog, exp_config: ExperimentConfig
+) -> str | None:
+    """Store the first post-unlearning aggregation checkpoint for attack alignment."""
+
+    anchor_state = None
+    if unlearning_log.global_model_snapshots_after_unlearning:
+        anchor_state = unlearning_log.global_model_snapshots_after_unlearning[0]
+    elif unlearning_log.final_model_state is not None:
+        anchor_state = unlearning_log.final_model_state
+
+    if anchor_state is None:
+        print("No unlearning snapshot available to persist as anchor model.")
+        return None
+
+    save_dir = os.path.join(
+        exp_config.logging.output_dir, exp_config.logging.experiment_name, "unlearning"
+    )
+    os.makedirs(save_dir, exist_ok=True)
+    path = os.path.join(save_dir, "anchor_model.pt")
+    torch.save(anchor_state, path)
+    print(f"Saved unlearning anchor model to '{path}'.")
+    return path
 
 
 def dispatch_attack(
@@ -269,12 +344,14 @@ def main() -> None:
     set_seed(exp_config.logging.seed)
     os.makedirs(exp_config.logging.output_dir, exist_ok=True)
 
-    print("Preparing federated dataloaders...")
+    print("[Step 1] Preparing dataset (download/preprocess if needed)...")
     train_loaders, eval_loaders = get_federated_dataloaders(exp_config)
     print(
-        f"Initialized {len(train_loaders)} client train loaders"
-        f" and evaluation splits: {list(eval_loaders.keys())}"
+        f"[Step 2] Allocated dataset to {len(train_loaders)} federated clients"
+        f" with evaluation splits: {list(eval_loaders.keys())}"
     )
+
+    dp_config = configure_local_privacy(exp_config)
 
     print(f"Building model '{exp_config.model.arch}'...")
     model = build_model(exp_config.model).to(exp_config.logging.device)
@@ -291,7 +368,7 @@ def main() -> None:
 
     if args.mode in {"full", "train_only"}:
         print("Starting federated training stage...")
-        clients, _ = build_clients(train_loaders, eval_loaders, exp_config)
+        clients, _ = build_clients(train_loaders, eval_loaders, exp_config, dp_config)
         trainer = FederatedTrainer(
             model=model,
             clients=clients,
@@ -304,13 +381,14 @@ def main() -> None:
             training_log,
             os.path.join(exp_config.logging.output_dir, f"{exp_config.logging.experiment_name}_training_log.pt"),
         )
+        save_tail_model_snapshots(training_log, exp_config, keep_last=5)
         print("Training stage complete. Training log saved.")
 
     if args.mode in {"full", "unlearning_only", "attack_only"}:
         if training_log is None:
             raise RuntimeError("Training log required for unlearning/attack stages.")
         print("Starting unlearning stage...")
-        clients, _ = build_clients(train_loaders, eval_loaders, exp_config)
+        clients, _ = build_clients(train_loaders, eval_loaders, exp_config, dp_config)
         unlearning_config = build_unlearning_config(exp_config, clients, model)
         unlearning_log = apply_unlearning(unlearning_config, training_log)
         if unlearning_log.final_model_state is not None:
@@ -319,6 +397,7 @@ def main() -> None:
             unlearning_log,
             os.path.join(exp_config.logging.output_dir, f"{exp_config.logging.experiment_name}_unlearning_log.pt"),
         )
+        save_initial_unlearned_model(unlearning_log, exp_config)
         print("Unlearning stage complete. Unlearning log saved.")
 
         relearn_rounds = exp_config.unlearning.extra_params.get("relearn_rounds", 0)
@@ -328,7 +407,7 @@ def main() -> None:
                 f"Starting relearning for {relearn_rounds} rounds"
                 f" with client fraction {relearn_fraction}."
             )
-            clients, _ = build_clients(train_loaders, eval_loaders, exp_config)
+            clients, _ = build_clients(train_loaders, eval_loaders, exp_config, dp_config)
             relearn_trainer = FederatedTrainer(
                 model=model,
                 clients=clients,
