@@ -275,12 +275,23 @@ def _extract_reconstructions_for_saving(
         return images, images
 
     if attack_level == "sample":
-        candidate_images = [
-            cand.image.detach().cpu()
-            for cand in getattr(result, "top_candidates", [])
-            if hasattr(cand, "image")
-        ]
-        stacked = torch.stack(candidate_images) if candidate_images else torch.empty(0)
+        collected: list[torch.Tensor] = []
+
+        for cand in getattr(result, "top_candidates", []):
+            if hasattr(cand, "image"):
+                collected.append(_ensure_batch(cand.image.detach().cpu()))
+
+        final_images = getattr(result, "final_images", {})
+        if isinstance(final_images, Mapping):
+            for images in final_images.values():
+                if isinstance(images, torch.Tensor):
+                    collected.append(_ensure_batch(images.detach().cpu()))
+                elif isinstance(images, (list, tuple)):
+                    for img in images:
+                        if isinstance(img, torch.Tensor):
+                            collected.append(_ensure_batch(img.detach().cpu()))
+
+        stacked = _stack_tensor_collection(collected) or torch.empty(0)
         return stacked, stacked
 
     return None, None
@@ -381,7 +392,12 @@ def _ensure_minimum_images(images: torch.Tensor, min_required: int) -> torch.Ten
 
 
 def _save_reconstruction_png(images: torch.Tensor, save_dir: str, filename: str) -> None:
-    """Save a grid preview of reconstructions to disk."""
+    """Save a grid preview of reconstructions to ``save_dir/filename``.
+
+    PNGs are always written into the experiment's ``attacks`` output
+    directory (i.e., ``<output_dir>/<experiment_name>/attacks``), so
+    downstream consumers know where to find them.
+    """
 
     if images is None or images.numel() == 0:
         print("No reconstructed images available for visualization.")
@@ -391,6 +407,48 @@ def _save_reconstruction_png(images: torch.Tensor, save_dir: str, filename: str)
     save_path = os.path.join(save_dir, filename)
     save_image(grid, save_path)
     print(f"Saved reconstruction preview to {save_path}")
+
+
+def _convert_saved_reconstructions_to_png(exp_config: ExperimentConfig) -> None:
+    """Load the latest saved reconstructions tensor and export it as PNG."""
+
+    recon_path = os.path.join(
+        exp_config.logging.output_dir,
+        exp_config.logging.experiment_name,
+        "attacks",
+        "reconstructions.pt",
+    )
+
+    if not os.path.exists(recon_path):
+        print(f"No saved reconstructions found at '{recon_path}'. Skipping PNG export.")
+        return
+
+    reconstructions = torch.load(recon_path, map_location="cpu")
+    images = _flatten_reconstruction_content(reconstructions)
+
+    if images is None or images.numel() == 0:
+        print("Loaded reconstructions do not contain any images. Skipping PNG export.")
+        return
+
+    save_dir = os.path.dirname(recon_path)
+    _save_reconstruction_png(images, save_dir, "reconstructions_final.png")
+
+
+def _flatten_reconstruction_content(reconstructions: Any) -> torch.Tensor:
+    """Normalize loaded reconstruction artifacts into a single image batch."""
+
+    if isinstance(reconstructions, torch.Tensor):
+        return _ensure_batch(reconstructions.detach().cpu())
+
+    if isinstance(reconstructions, Mapping):
+        stacked = _stack_tensor_collection(reconstructions.values())
+        return stacked if stacked is not None else torch.empty(0)
+
+    if isinstance(reconstructions, (list, tuple)):
+        stacked = _stack_tensor_collection(reconstructions)
+        return stacked if stacked is not None else torch.empty(0)
+
+    return torch.empty(0)
 
 
 def main() -> None:
@@ -497,6 +555,7 @@ def main() -> None:
             raise RuntimeError("Attack stage requires training and unlearning logs.")
         print(f"Starting attack evaluation at '{exp_config.attack.level}' level...")
         dispatch_attack(exp_config, model, relearn_log or training_log, unlearning_log)
+        _convert_saved_reconstructions_to_png(exp_config)
         print("Attack evaluation complete. Metrics saved.")
 
     print("Experiment finished.")
