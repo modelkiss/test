@@ -75,6 +75,9 @@ class AttackConfig:
     num_reconstruct_per_target: int = 0
     topk_candidates: int = 0
     loss_weights: Dict[str, float] = field(default_factory=dict)
+    target_clients: List[int] = field(default_factory=list)
+    target_classes: List[int] = field(default_factory=list)
+    target_samples: List[str] = field(default_factory=list)
     diffusion: DiffusionConfig | None = None
 
 
@@ -172,6 +175,9 @@ class ExperimentConfig:
             "num_reconstruct_per_target": self.attack.num_reconstruct_per_target,
             "topk_candidates": self.attack.topk_candidates,
             "loss_weights": self.attack.loss_weights,
+            "target_clients": list(self.attack.target_clients),
+            "target_classes": list(self.attack.target_classes),
+            "target_samples": list(self.attack.target_samples),
             "diffusion": diffusion_dict,
         }
 
@@ -369,6 +375,9 @@ def _build_attack_config(value: Any, defaults: Dict[str, Any]) -> AttackConfig:
         num_reconstruct_per_target=int(data.get("num_reconstruct_per_target", 0)),
         topk_candidates=int(data.get("topk_candidates", 0)),
         loss_weights=dict(data.get("loss_weights", {})),
+        target_clients=list(data.get("target_clients", [])),
+        target_classes=list(data.get("target_classes", [])),
+        target_samples=list(data.get("target_samples", [])),
         diffusion=diffusion,
     )
 

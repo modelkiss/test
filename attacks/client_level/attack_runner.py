@@ -35,6 +35,8 @@ def run_client_level_attack(
 
     target_clients: List[int] = list(config.get("target_clients", []))
     if not target_clients:
+        target_clients = list(config.get("forgotten_clients", []))
+    if not target_clients:
         raise ValueError("No target clients provided for client-level attack.")
 
     target_cfg = config.get("target_builder", {}) if isinstance(config, dict) else {}
