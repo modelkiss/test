@@ -24,6 +24,12 @@ class AttackResult:
     notes: List[str] = field(default_factory=list)
     preparation: Optional[ReconstructionAssets] = None
 
+    @property
+    def metrics(self) -> Dict[str, List[float]]:
+        """Alias for ``scores`` to align with downstream consumers."""
+
+        return self.scores
+
 
 def run_sample_level_attack(
     config: Mapping[str, Any], model_state: Any, training_log: Any, unlearning_log: Any
