@@ -10,6 +10,7 @@ from attacks.sample_level.guidance_config import (
     get_sample_level_stage2_weights,
 )
 from attacks.sample_level.target_builder import build_sample_level_targets
+from attacks.common.utils import ReconstructionAssets, prepare_reconstruction_assets
 
 
 @dataclass
@@ -21,10 +22,11 @@ class AttackResult:
     final_images: Dict[str, List[Any]] = field(default_factory=dict)
     scores: Dict[str, List[float]] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
+    preparation: Optional[ReconstructionAssets] = None
 
 
 def run_sample_level_attack(
-    config: Mapping[str, Any], federated_state: Any, sd_ckpt_path: Optional[str] = None
+    config: Mapping[str, Any], model_state: Any, training_log: Any, unlearning_log: Any
 ) -> AttackResult:
     """串联样本级攻击流程，返回重建结果。
 
@@ -37,19 +39,25 @@ def run_sample_level_attack(
         raise ValueError("No target samples provided for sample-level attack.")
 
     target_cfg = config.get("target_builder", {}) if isinstance(config, dict) else {}
-    targets = build_sample_level_targets(federated_state, target_samples, target_cfg)
+    targets = build_sample_level_targets(model_state, target_samples, target_cfg)
 
     stage1_weights = get_sample_level_stage1_weights(config.get("stage1_weights", {}))
     stage2_weights = get_sample_level_stage2_weights(config.get("stage2_weights", {}))
+
+    prep = prepare_reconstruction_assets(
+        config,
+        training_log,
+        unlearning_log,
+        target_classes=config.get("forgotten_classes", []),
+    )
 
     notes = [
         f"Prepared targets for {len(targets)} samples.",
         f"Stage1 weights: {stage1_weights}",
         f"Stage2 weights: {stage2_weights}",
         "Candidate pool enabled for iterative screening.",
+        *prep.notes,
     ]
-    if sd_ckpt_path:
-        notes.append(f"Using diffusion checkpoint at {sd_ckpt_path}")
 
     # 具体的微调、候选生成与精修由调用方实现，这里仅汇总调度信息。
-    return AttackResult(targets=targets, notes=notes)
+    return AttackResult(targets=targets, notes=notes, preparation=prep)
