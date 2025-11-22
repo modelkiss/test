@@ -393,6 +393,48 @@ def _save_reconstruction_png(images: torch.Tensor, save_dir: str, filename: str)
     print(f"Saved reconstruction preview to {save_path}")
 
 
+def _convert_saved_reconstructions_to_png(exp_config: ExperimentConfig) -> None:
+    """Load the latest saved reconstructions tensor and export it as PNG."""
+
+    recon_path = os.path.join(
+        exp_config.logging.output_dir,
+        exp_config.logging.experiment_name,
+        "attacks",
+        "reconstructions.pt",
+    )
+
+    if not os.path.exists(recon_path):
+        print(f"No saved reconstructions found at '{recon_path}'. Skipping PNG export.")
+        return
+
+    reconstructions = torch.load(recon_path, map_location="cpu")
+    images = _flatten_reconstruction_content(reconstructions)
+
+    if images is None or images.numel() == 0:
+        print("Loaded reconstructions do not contain any images. Skipping PNG export.")
+        return
+
+    save_dir = os.path.dirname(recon_path)
+    _save_reconstruction_png(images, save_dir, "reconstructions_final.png")
+
+
+def _flatten_reconstruction_content(reconstructions: Any) -> torch.Tensor:
+    """Normalize loaded reconstruction artifacts into a single image batch."""
+
+    if isinstance(reconstructions, torch.Tensor):
+        return _ensure_batch(reconstructions.detach().cpu())
+
+    if isinstance(reconstructions, Mapping):
+        stacked = _stack_tensor_collection(reconstructions.values())
+        return stacked if stacked is not None else torch.empty(0)
+
+    if isinstance(reconstructions, (list, tuple)):
+        stacked = _stack_tensor_collection(reconstructions)
+        return stacked if stacked is not None else torch.empty(0)
+
+    return torch.empty(0)
+
+
 def main() -> None:
     args = parse_args()
     print(f"Loading experiment configuration from {args.config}...")
@@ -497,6 +539,7 @@ def main() -> None:
             raise RuntimeError("Attack stage requires training and unlearning logs.")
         print(f"Starting attack evaluation at '{exp_config.attack.level}' level...")
         dispatch_attack(exp_config, model, relearn_log or training_log, unlearning_log)
+        _convert_saved_reconstructions_to_png(exp_config)
         print("Attack evaluation complete. Metrics saved.")
 
     print("Experiment finished.")
