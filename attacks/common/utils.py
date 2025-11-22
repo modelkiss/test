@@ -49,7 +49,12 @@ def prepare_reconstruction_assets(
 
     diffusion_cfg = config.get("diffusion", {}) if isinstance(config, Mapping) else {}
     model_name = diffusion_cfg.get("model_name", "stable-diffusion-pretrained")
-    diffusion = ensure_local_diffusion_checkpoint(model_name, target_dir=diffusion_cfg.get("target_dir", "SD"))
+    diffusion = ensure_local_diffusion_checkpoint(
+        model_name,
+        target_dir=diffusion_cfg.get("target_dir", "SD"),
+        filename=diffusion_cfg.get("filename"),
+        format_hint=diffusion_cfg.get("format"),
+    )
 
     finetune_plan = build_finetune_recipes(target_classes)
 
